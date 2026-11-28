@@ -65,7 +65,6 @@
     "src/core/ConversationGraphErasureAuthorityStore.ts",
     "src/core/CredentialEnvTokenGate.ts",
     "src/core/CredentialLocationGate.ts",
-    "src/core/DesktopDelegatedSessionStore.ts",
     "src/core/DesktopGuardObservation.ts",
     "src/core/DispatchVerifier.ts",
     "src/core/EscalationGovernor.ts",

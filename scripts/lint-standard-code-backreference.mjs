@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// safe-git-allow: read-only git (merge-base, show) to compare the infrastructure baseline with main's copy; nothing in the checkout is changed.
 /**
  * lint-standard-code-backreference — the return half of the reference graph.
  *
@@ -27,6 +28,8 @@
  * WHAT IT DOES NOT CHECK, stated rather than implied: that the named standard is the RIGHT one. That
  * is a reading, and it is carried as a named sub-obligation on the article with a countdown.
  */
+import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -103,7 +106,32 @@ for (const rel of [...cited].sort()) {
 // Its pre-existing gaps live in their own shrink-only baseline. An absent baseline counts as EMPTY,
 // so deleting the file cannot switch the check off.
 const INFRA_BASELINE = path.join(ROOT, 'docs/standards-backreference-infrastructure-baseline.json');
-const INFRA_NAME = /(Guard|Gate|Sentinel|Watchdog|Ratchet|Breaker|Reaper|Limiter|Governor|Authority|Verifier|Arbiter|Fence|Detector)/i;
+// Matched as a whole WORD of the file name (CamelCase or -/_/. separated), never as a substring:
+// a substring match caught DesktopDelegatedSessionStore ("gate" inside "Delegated") and would catch
+// navigate, aggregate or propagate (second-pass review of PR 4024).
+const INFRA_WORDS = new Set([
+  'guard', 'guards', 'guarded', 'guardian', 'gate', 'gates', 'gated', 'gating', 'gateway', 'gateways',
+  'sentinel', 'sentinels', 'watchdog', 'watchdogs', 'ratchet', 'ratchets', 'breaker', 'breakers',
+  'reaper', 'reapers', 'limiter', 'limiters', 'governor', 'governors', 'authority', 'authorities',
+  'verifier', 'verifiers', 'arbiter', 'arbiters', 'fence', 'fences', 'fenced', 'detector', 'detectors',
+  // Closed compounds a CamelCase split cannot separate:
+  'safeguard', 'safeguards', 'gatekeeper', 'gatekeepers', 'guardrail', 'guardrails',
+]);
+function nameWords(base) {
+  return base.replace(/\.(ts|mjs|cjs|js)$/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/[\s\-_.]+/).filter(Boolean).map((w) => w.toLowerCase());
+}
+// The baseline may only shrink, and its CONTENT is pinned here, in reviewed code, not only its
+// size. The ceiling catches an added entry. The hash catches a swap: fixing one baselined file and
+// putting a new unreferenced guard in the freed place keeps the count but changes the hash. The
+// same goes for deleting the baseline and regenerating it. Either change means editing these two
+// lines, which a reviewer reads. When files legitimately leave the baseline, update both.
+// Hash: sha256 of JSON.stringify(sorted entries).
+const INFRA_BASELINE_CEILING = 267;
+const INFRA_BASELINE_SHA256 = '200043790a351518fd329a9e86e7f3dc5514fe6d1c4c58dc35fd788e7175c754';
+function baselineHash(entries) {
+  return crypto.createHash('sha256').update(JSON.stringify([...entries].sort())).digest('hex');
+}
 function isInfrastructurePath(rel) {
   if (!/^(src|scripts)\//.test(rel)) return false;
   if (rel.includes('/templates/') || rel.endsWith('.d.ts') || /(^|\/)__tests__\//.test(rel)) return false;
@@ -111,7 +139,7 @@ function isInfrastructurePath(rel) {
   const base = rel.split('/').pop();
   if (rel.startsWith('scripts/') && base.startsWith('lint-')) return true;
   if (/\/hooks\//.test(rel) || /Hook/.test(base)) return true;
-  return INFRA_NAME.test(base);
+  return nameWords(base).some((w) => INFRA_WORDS.has(w));
 }
 function walk(dir, out = []) {
   let entries;
@@ -144,9 +172,76 @@ if (process.argv.includes('--write-infrastructure-baseline')) {
   console.log(`lint-standard-code-backreference: wrote ${infraMissing.length} infrastructure baseline entries.`);
   process.exit(0);
 }
-let infraBaseline;
-try { infraBaseline = JSON.parse(fs.readFileSync(INFRA_BASELINE, 'utf8')); } catch { infraBaseline = { grandfatheredInfrastructure: [] }; }
-const infraGrandfathered = new Set(infraBaseline.grandfatheredInfrastructure || []);
+// Absent ⇒ empty (deleting the file cannot switch the check off). Present but unreadable or
+// malformed ⇒ a named failure, never a silent empty or a silent pass.
+let infraBaseline = { grandfatheredInfrastructure: [] };
+const infraBaselineErrors = [];
+if (fs.existsSync(INFRA_BASELINE)) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(INFRA_BASELINE, 'utf8'));
+    if (!parsed || !Array.isArray(parsed.grandfatheredInfrastructure) || parsed.grandfatheredInfrastructure.some((e) => typeof e !== 'string')) {
+      infraBaselineErrors.push('docs/standards-backreference-infrastructure-baseline.json is malformed: it must hold { "grandfatheredInfrastructure": [ "path", ... ] }.');
+    } else {
+      infraBaseline = parsed;
+    }
+  } catch (error) {
+    infraBaselineErrors.push(`docs/standards-backreference-infrastructure-baseline.json is unreadable (${error instanceof Error ? error.message : String(error)}). Restore it from main; do not regenerate it.`);
+  }
+}
+// Non-text entries are already refused as malformed above; duplicates are refused here.
+const infraEntries = Array.isArray(infraBaseline.grandfatheredInfrastructure) ? infraBaseline.grandfatheredInfrastructure : [];
+const infraGrandfathered = new Set(infraEntries.filter((e) => typeof e === 'string'));
+if (infraGrandfathered.size !== infraEntries.length && !infraBaselineErrors.length) {
+  infraBaselineErrors.push('docs/standards-backreference-infrastructure-baseline.json lists a path more than once. Remove the duplicate.');
+}
+// The ceiling must EQUAL the baseline's size. Above it: an entry was added by hand. Below it:
+// the baseline shrank and the ceiling must come down too, so the slack cannot be refilled later.
+// Skipped only when the baseline is absent (empty), which is already the strictest state.
+if (fs.existsSync(INFRA_BASELINE) && !infraBaselineErrors.length && infraGrandfathered.size !== INFRA_BASELINE_CEILING) {
+  infraBaselineErrors.push(infraGrandfathered.size > INFRA_BASELINE_CEILING
+    ? `The infrastructure baseline holds ${infraGrandfathered.size} entries, above the ceiling of ${INFRA_BASELINE_CEILING} in scripts/lint-standard-code-backreference.mjs. The baseline may only shrink: an entry may not be added by hand. Add a back-reference to the new file instead.`
+    : `The infrastructure baseline holds ${infraGrandfathered.size} entries, below the ceiling of ${INFRA_BASELINE_CEILING}. Lower INFRA_BASELINE_CEILING in scripts/lint-standard-code-backreference.mjs to ${infraGrandfathered.size}, and update INFRA_BASELINE_SHA256 to the sha256 of the new sorted list, so the freed places cannot be refilled.`);
+} else if (fs.existsSync(INFRA_BASELINE) && !infraBaselineErrors.length && baselineHash(infraGrandfathered) !== INFRA_BASELINE_SHA256) {
+  infraBaselineErrors.push(`The infrastructure baseline's entries differ from the reviewed list pinned in scripts/lint-standard-code-backreference.mjs, though the count matches. An entry was swapped or the baseline was regenerated. The baseline may only shrink: a new file must name its standard instead of taking a freed place.`);
+}
+
+// The ceiling and the hash pin the list in reviewed code, but a change that both shrinks the list
+// and adds a new entry can update both lines, and that edit reads like an honest shrink. So the
+// strongest check is against git: every entry must already have been in main's copy of the
+// baseline. A new file can never join it, whatever the two lines say.
+const INFRA_BASELINE_REL = 'docs/standards-backreference-infrastructure-baseline.json';
+function mainBaseline() {
+  const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  for (const ref of ['origin/main', 'JKHeadley/main', 'main']) {
+    let base;
+    try { base = git(['merge-base', 'HEAD', ref]); } catch { continue; }
+    // Tell "the file is not on main yet" (the PR adding it is reviewed whole) apart from any other
+    // git failure, and say which it was: a skip is never silent.
+    let listed;
+    try { listed = git(['ls-tree', '--name-only', base, '--', INFRA_BASELINE_REL]); } catch { return { ref, entries: null, unreadable: true }; }
+    if (!listed) return { ref, entries: null, absent: true };
+    let text;
+    try { text = git(['show', `${base}:${INFRA_BASELINE_REL}`]); } catch { return { ref, entries: null, unreadable: true }; }
+    try { return { ref, entries: new Set(JSON.parse(text).grandfatheredInfrastructure ?? []) }; } catch { return { ref, entries: null, unreadable: true }; }
+  }
+  return null;
+}
+let infraMainNote = '';
+if (fs.existsSync(INFRA_BASELINE) && !infraBaselineErrors.length) {
+  const main = mainBaseline();
+  if (!main) {
+    infraMainNote = 'content check against main skipped: no main branch is reachable from this checkout (CI runs it with full history).';
+  } else if (main.absent) {
+    infraMainNote = `content check against main skipped: ${INFRA_BASELINE_REL} is not on main yet at the merge-base with ${main.ref} (the change that adds it is reviewed whole; rebase once it lands).`;
+  } else if (main.unreadable) {
+    infraBaselineErrors.push(`main's copy of ${INFRA_BASELINE_REL} (via ${main.ref}) is unreadable, so the baseline cannot be checked against it.`);
+  } else if (main.entries) {
+    const added = [...infraGrandfathered].filter((e) => !main.entries.has(e)).sort();
+    if (added.length) {
+      infraBaselineErrors.push(`The infrastructure baseline adds ${added.length} entr${added.length === 1 ? 'y' : 'ies'} that main's copy does not hold: ${added.slice(0, 10).join(', ')}. The baseline may only shrink. A new or changed file must name its standard instead.`);
+    }
+  }
+}
 
 let baseline;
 try { baseline = JSON.parse(fs.readFileSync(BASELINE, 'utf8')); } catch { baseline = null; }
@@ -189,9 +284,12 @@ for (const rel of infraMissing) {
     );
   }
 }
+errors.push(...infraBaselineErrors);
 const infraPresent = new Set(infraPopulation);
 for (const rel of infraGrandfathered) {
-  if (infraPresent.has(rel) && !infraMissing.includes(rel)) {
+  if (!infraPresent.has(rel)) {
+    errors.push(`${rel} is in the infrastructure baseline but is no longer infrastructure here (deleted, renamed, or not named like a guard) — remove it from docs/standards-backreference-infrastructure-baseline.json.`);
+  } else if (!infraMissing.includes(rel)) {
     errors.push(`${rel} is in the infrastructure baseline but now names a standard — remove it from docs/standards-backreference-infrastructure-baseline.json. The baseline may only shrink.`);
   }
 }
@@ -206,3 +304,4 @@ console.log(
     `${missing.length} grandfathered (shrink-only)${gone.length ? `, ${gone.length} cited-but-absent (the dangling-ref floor owns those)` : ''}; ` +
     `${infraPopulation.length} further infrastructure file(s), ${infraOk} naming a standard back, ${infraMissing.length} grandfathered (shrink-only).`,
 );
+if (infraMainNote) console.log(`lint-standard-code-backreference: NOTE — ${infraMainNote}`);

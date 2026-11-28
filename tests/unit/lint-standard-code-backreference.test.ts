@@ -1,9 +1,11 @@
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
+// safe-git-allow: test file — git init/commit/checkout only inside a throwaway fixture repository.
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // The return half of the reference graph (References Run From Both Ends — the Registry Names the
@@ -125,6 +127,27 @@ describe('lint-standard-code-backreference — widened infrastructure population
   function withInfra(root: string, entries: string[]): void {
     fs.writeFileSync(path.join(root, INFRA), JSON.stringify({ grandfatheredInfrastructure: entries }));
   }
+  // The real script carries the reviewed ceiling for the real baseline. A fixture with its own small
+  // baseline runs a COPY of the lint whose ceiling is set to the fixture's size — no environment
+  // override exists, because one would be a way to switch the ceiling off.
+  // Pins the ceiling and the content hash in a copy of the lint. By default the hash is taken from
+  // the fixture's own baseline (the reviewed list); `pinned` pins a different list, to test a swap.
+  function runWithCeiling(root: string, ceiling: number, args: string[] = [], pinned?: string[]): { code: number; out: string } {
+    const src = fs.readFileSync(LINT, 'utf8');
+    expect(src).toMatch(/const INFRA_BASELINE_CEILING = \d+;/);
+    expect(src).toMatch(/const INFRA_BASELINE_SHA256 = '[0-9a-f]{64}';/);
+    let entries: unknown[] = pinned ?? [];
+    if (!pinned) {
+      try { entries = JSON.parse(fs.readFileSync(path.join(root, 'docs/standards-backreference-infrastructure-baseline.json'), 'utf8')).grandfatheredInfrastructure ?? []; } catch { entries = []; }
+    }
+    const hash = createHash('sha256').update(JSON.stringify([...entries].map(String).sort())).digest('hex');
+    const copy = path.join(root, 'lint-copy.mjs');
+    fs.writeFileSync(copy, src
+      .replace(/const INFRA_BASELINE_CEILING = \d+;/, `const INFRA_BASELINE_CEILING = ${ceiling};`)
+      .replace(/const INFRA_BASELINE_SHA256 = '[0-9a-f]{64}';/, `const INFRA_BASELINE_SHA256 = '${hash}';`));
+    const r = spawnSync(process.execPath, [copy, ...args], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } });
+    return { code: r.status ?? -1, out: `${r.stdout}\n${r.stderr}` };
+  }
 
   it('fails a new guard-named file that names no standard, though the registry never cites it', () => {
     const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetGuard.ts': 'export {};\n' } });
@@ -150,9 +173,9 @@ describe('lint-standard-code-backreference — widened infrastructure population
   it('a baselined infrastructure file passes, and must leave the baseline once it names a standard', () => {
     const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetGate.ts': 'export {};\n' } });
     withInfra(root, ['src/core/WidgetGate.ts']);
-    expect(run(root).code).toBe(0);
+    expect(runWithCeiling(root, 1).code).toBe(0);
     fs.writeFileSync(path.join(root, 'src/core/WidgetGate.ts'), `// Governed by: *${LONG}*\nexport {};\n`);
-    const r = run(root);
+    const r = runWithCeiling(root, 1);
     expect(r.code).toBe(1);
     expect(r.out).toContain('src/core/WidgetGate.ts is in the infrastructure baseline but now names a standard');
   });
@@ -178,9 +201,132 @@ describe('lint-standard-code-backreference — widened infrastructure population
     const write = () => spawnSync(process.execPath, [LINT, '--write-infrastructure-baseline'], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } });
     expect(write().status).toBe(0);
     expect(JSON.parse(fs.readFileSync(path.join(root, INFRA), 'utf8')).grandfatheredInfrastructure).toEqual(['src/core/WidgetWatchdog.ts']);
-    expect(run(root).code).toBe(0);
+    expect(runWithCeiling(root, 1).code).toBe(0);
     const again = write();
     expect(again.status).toBe(1);
     expect(`${again.stdout}${again.stderr}`).toContain('refusing --write-infrastructure-baseline');
+  });
+
+  it('refuses a hand-added baseline entry: the ceiling in the reviewed lint must equal the baseline size', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/OldGate.ts': 'export {};\n', 'src/core/NewGate.ts': 'export {};\n' } });
+    withInfra(root, ['src/core/OldGate.ts', 'src/core/NewGate.ts']);
+    const over = runWithCeiling(root, 1);
+    expect(over.code).toBe(1);
+    expect(over.out).toContain('above the ceiling of 1');
+    const under = runWithCeiling(root, 3);
+    expect(under.code).toBe(1);
+    expect(under.out).toContain('Lower INFRA_BASELINE_CEILING');
+    expect(runWithCeiling(root, 2).code).toBe(0);
+  });
+
+  it('a corrupt or malformed baseline is a named failure, never a silent empty or pass', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetGuard.ts': `// Governed by: *${LONG}*\nexport {};\n` } });
+    fs.writeFileSync(path.join(root, INFRA), '{ not json');
+    const bad = runWithCeiling(root, 0);
+    expect(bad.code).toBe(1);
+    expect(bad.out).toContain('baseline.json is unreadable');
+    fs.writeFileSync(path.join(root, INFRA), JSON.stringify({ grandfatheredInfrastructure: 'src/core/WidgetGuard.ts' }));
+    const malformed = runWithCeiling(root, 0);
+    expect(malformed.code).toBe(1);
+    expect(malformed.out).toContain('baseline.json is malformed');
+  });
+
+  it('flags a stale baseline entry for a file that was deleted or is no longer infrastructure', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/Widget.ts': 'export {};\n' } });
+    withInfra(root, ['src/core/GoneGuard.ts']);
+    const r = runWithCeiling(root, 1);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('src/core/GoneGuard.ts is in the infrastructure baseline but is no longer infrastructure here');
+  });
+
+  it('matches guard words as whole words of the file name, not as substrings', () => {
+    const root = fixture({
+      articles: [{ title: LONG, cites: [] }],
+      files: {
+        'src/core/DesktopDelegatedSessionStore.ts': 'export {};\n', 'src/core/navigateTo.ts': 'export {};\n',
+        'src/core/aggregateStats.ts': 'export {};\n', 'src/core/SendGateway.ts': 'export {};\n', 'src/threadline/A2AGateway.ts': 'export {};\n',
+        'src/core/FencedLease.ts': 'export {};\n', 'src/core/leaseGatedSpawn.ts': 'export {};\n', 'src/core/rate-limiter.ts': 'export {};\n',
+        'src/core/GuardedWrite.ts': 'export {};\n', 'src/core/SafeguardStore.ts': 'export {};\n', 'src/core/RunWatchdogs.ts': 'export {};\n',
+        'src/core/Regatta.ts': 'export {};\n', 'src/core/Fenceless.ts': 'export {};\n',
+      },
+    });
+    const r = run(root);
+    expect(r.code).toBe(1);
+    for (const hit of ['FencedLease.ts', 'leaseGatedSpawn.ts', 'rate-limiter.ts', 'SendGateway.ts', 'GuardedWrite.ts', 'SafeguardStore.ts', 'RunWatchdogs.ts']) {
+      expect(r.out).toContain(`src/core/${hit} is decision infrastructure`);
+    }
+    expect(r.out).toContain('src/threadline/A2AGateway.ts is decision infrastructure');
+    for (const miss of ['DesktopDelegatedSessionStore.ts', 'navigateTo.ts', 'aggregateStats.ts', 'Regatta.ts', 'Fenceless.ts']) expect(r.out).not.toContain(`src/core/${miss}`);
+  });
+
+  it('refuses a swapped entry: same count, different list, against the reviewed hash', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/OldGate.ts': `// Governed by: *${LONG}*\nexport {};\n`, 'src/core/NewGate.ts': 'export {};\n' } });
+    withInfra(root, ['src/core/NewGate.ts']);
+    // The reviewed list held OldGate; it was fixed and NewGate took its place.
+    const r = runWithCeiling(root, 1, [], ['src/core/OldGate.ts']);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("entries differ from the reviewed list pinned in scripts/lint-standard-code-backreference.mjs, though the count matches");
+    expect(runWithCeiling(root, 1).code).toBe(0); // the same list, pinned, passes
+  });
+
+  it('refuses a shrink-and-add against main, even when the ceiling and hash are updated to match', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: {
+      'src/core/OldGate.ts': 'export {};\n', 'src/core/FixedGate.ts': 'export {};\n',
+    } });
+    withInfra(root, ['src/core/FixedGate.ts', 'src/core/OldGate.ts']);
+    const git = (...a: string[]) => spawnSync('git', a, { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', GIT_CONFIG_NOSYSTEM: '1', HOME: root } });
+    git('init', '-q', '-b', 'main'); git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '-A');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'main');
+    git('checkout', '-q', '-b', 'change');
+    // Fix FixedGate (it leaves the list) and slip an unreferenced NewGate into the freed place.
+    fs.writeFileSync(path.join(root, 'src/core/FixedGate.ts'), `// Governed by: *${LONG}*\nexport {};\n`);
+    fs.writeFileSync(path.join(root, 'src/core/NewGate.ts'), 'export {};\n');
+    withInfra(root, ['src/core/NewGate.ts', 'src/core/OldGate.ts']);
+    const r = runWithCeiling(root, 2); // ceiling and hash both pinned to the new list
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("adds 1 entry that main's copy does not hold: src/core/NewGate.ts");
+    // An honest shrink passes against main.
+    SafeFsExecutor.safeRmSync(path.join(root, 'src/core/NewGate.ts'), { force: true, operation: 'lint-standard-code-backreference.test.ts' });
+    withInfra(root, ['src/core/OldGate.ts']);
+    expect(runWithCeiling(root, 1).code).toBe(0);
+  });
+
+  it('says so (a NOTE, not a silent pass) when main does not hold the baseline yet', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/OldGate.ts': 'export {};\n' } });
+    const git = (...a: string[]) => spawnSync('git', a, { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', GIT_CONFIG_NOSYSTEM: '1', HOME: root } });
+    git('init', '-q', '-b', 'main'); git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '-A');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'main without a baseline');
+    git('checkout', '-q', '-b', 'change');
+    withInfra(root, ['src/core/OldGate.ts']);
+    const r = runWithCeiling(root, 1);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('content check against main skipped');
+    expect(r.out).toContain('is not on main yet');
+  });
+
+  it("names the failure when main's copy of the baseline is unreadable", () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/OldGate.ts': 'export {};\n' } });
+    fs.writeFileSync(path.join(root, INFRA), '{ broken json on main');
+    const git = (...a: string[]) => spawnSync('git', a, { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', GIT_CONFIG_NOSYSTEM: '1', HOME: root } });
+    git('init', '-q', '-b', 'main'); git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '-A');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'main with a corrupt baseline');
+    git('checkout', '-q', '-b', 'change');
+    withInfra(root, ['src/core/OldGate.ts']);
+    const r = runWithCeiling(root, 1);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("main's copy of docs/standards-backreference-infrastructure-baseline.json");
+    expect(r.out).toContain('is unreadable');
+  });
+
+  it('refuses duplicate and non-text baseline entries, and a null baseline list', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/OldGate.ts': 'export {};\n' } });
+    withInfra(root, ['src/core/OldGate.ts', 'src/core/OldGate.ts']);
+    expect(runWithCeiling(root, 1).out).toContain('lists a path more than once');
+    fs.writeFileSync(path.join(root, INFRA), JSON.stringify({ grandfatheredInfrastructure: ['src/core/OldGate.ts', 7] }));
+    expect(runWithCeiling(root, 1, [], ['src/core/OldGate.ts']).out).toContain('baseline.json is malformed');
+    fs.writeFileSync(path.join(root, INFRA), JSON.stringify({ grandfatheredInfrastructure: null }));
+    const nul = runWithCeiling(root, 0);
+    expect(nul.code).toBe(1);
+    expect(nul.out).toContain('baseline.json is malformed');
   });
 });

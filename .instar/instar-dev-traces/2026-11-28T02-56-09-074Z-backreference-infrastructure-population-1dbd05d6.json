@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "backreference-infrastructure-population",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T02:56:09.074Z",
+  "artifactPath": "upgrades/side-effects/backreference-infrastructure-population.md",
+  "artifactSha256": "66825b440e2e2850393a6aa009f10d54f13e6074ae27f8dbaf6b3d9129ddb07f",
+  "coveredFiles": [
+    "docs/specs/backreference-infrastructure-population.eli16.md",
+    "docs/standards-backreference-infrastructure-baseline.json",
+    "scripts/lint-standard-code-backreference.mjs",
+    "tests/unit/lint-standard-code-backreference.test.ts",
+    "upgrades/next/backreference-infrastructure-population.md",
+    "upgrades/side-effects/backreference-infrastructure-population.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Hardens an existing repository lint (content-pinned, main-checked shrink-only baseline; whole-word guard names incl. gateways, plurals, compounds); no runtime change; a revert undoes it; second pass required because it can fail commits, and the reader concurred before this trace",
+  "eli16Path": "docs/specs/backreference-infrastructure-population.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/backreference-infrastructure-population.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
