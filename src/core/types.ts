@@ -5178,6 +5178,14 @@ export interface InstarConfig {
      * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
      */
     waitingAskLinks?: { enabled?: boolean };
+    /**
+     * spec-review-link-at-delivery §4: B27 (a spec handed to the person carries a readable link).
+     * `enabled` unset = live on development agents, dark on the fleet. `captureBodies` is an
+     * explicit measurement enrollment (never defaulted): B27-eligible reviews keep their judged text.
+     */
+    specReviewLinks?: { enabled?: boolean; captureBodies?: boolean };
+    /** spec-review-link-at-delivery §3-§4: owner email runs the outbound check. Unset = live on development agents, dark on the fleet. */
+    ownerEmailCheck?: { enabled?: boolean };
     /** sibling-machine-reach (CMT-2073): the outbound check sees what the agent's OTHER machines hold. Unset = live on development agents, dark on the fleet. */
     siblingReach?: { enabled?: boolean };
   };

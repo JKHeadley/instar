@@ -936,6 +936,9 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/whatsapp/send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    // spec-review-link-at-delivery §3: owner email now runs the outbound gate (plus the org check and a
+    // forward to the lease holder); under the 30 s default a client would time out while it still sent.
+    '/email/send-to-owner': OUTBOUND_MESSAGING_TIMEOUT_MS,
     // A file from another machine has its own 300 s limit, and a 408 under the stream would leave
     // its slot held. Uploads and purge keep the agent's configured default.
     '/mobile/media': Math.max(MOBILE_MEDIA_TIMEOUT_MS, opts?.defaultTimeoutMs ?? 30_000),

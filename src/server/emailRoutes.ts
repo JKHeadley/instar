@@ -24,6 +24,29 @@ export interface EmailRouteDeps {
   holdsLease: () => boolean;
   /** A standby forwards a one-off to the holder by the signed `email-send-forward` mesh command. */
   forwardToHolder?: (input: { id: string; subject: string; text: string; fallbackTopicId: number }) => Promise<{ ok: true; id: string } | { ok: false; reason: string }>;
+  /**
+   * spec-review-link-at-delivery §3: the outbound check every owner route runs, behind
+   * `toneGate.ownerEmailCheck.enabled`. Resolves true when it already wrote the refusal
+   * (422 nudge or hold): the email is not sent. Absent or switched off → today's route.
+   */
+  checkOutbound?: (text: string, input: { topicId: number; emailId: string; metadata: Record<string, string> }, res: Response) => Promise<boolean>;
+  /** `toneGate.ownerEmailCheck.enabled`, read live per request. False → the route is exactly today's. */
+  checkEnabled?: () => boolean;
+}
+
+/** spec §3: the only metadata keys a session may send on owner email — the four tone reactions. */
+export const OWNER_EMAIL_METADATA_KEYS = ['toneAdvisoryAck', 'toneAdvisoryAckReason', 'toneAdvisoryDecisionRef', 'toneAdvisoryComplied'] as const;
+
+/** Validate the optional metadata object: four string keys at most; anything else is refused. */
+export function parseOwnerEmailMetadata(raw: unknown): { ok: true; metadata: Record<string, string> } | { ok: false } {
+  if (raw === undefined) return { ok: true, metadata: {} };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false };
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!(OWNER_EMAIL_METADATA_KEYS as readonly string[]).includes(k) || typeof v !== 'string') return { ok: false };
+    out[k] = v.slice(0, 2_000);
+  }
+  return { ok: true, metadata: out };
 }
 
 const SAFE_ROW_FIELDS = ['id', 'createdAt', 'kind', 'subjectHash', 'textHash', 'fallbackTopicId', 'jobSlug', 'status', 'attempts', 'sentAt', 'reason', 'cause', 'terminalAt'] as const;
@@ -60,7 +83,7 @@ export function registerEmailRoutes(router: Router, deps: EmailRouteDeps): void 
       res.status(403).json({ error: 'no-origin-session', detail: 'Only a session started for a conversation can send email, and its fallback goes to that conversation.' });
       return;
     }
-    const { subject, text } = (req.body ?? {}) as { subject?: unknown; text?: unknown };
+    const { subject, text, metadata: rawMetadata } = (req.body ?? {}) as { subject?: unknown; text?: unknown; metadata?: unknown };
     if (typeof subject !== 'string' || !subject.trim() || subject.length > SUBJECT_MAX_CHARS * 4) {
       res.status(400).json({ error: 'invalid-subject' });
       return;
@@ -75,6 +98,19 @@ export function registerEmailRoutes(router: Router, deps: EmailRouteDeps): void 
       return;
     }
     const id = `em-${crypto.randomBytes(12).toString('hex')}`;
+    // spec-review-link-at-delivery §3: judged once, here, where the session wrote it — before any
+    // forward to the lease holder (whose forward receive path does not judge again). Switch off →
+    // nothing here runs and the route is exactly today's (metadata included: not read).
+    let checking = false;
+    try { checking = !!deps.checkOutbound && (deps.checkEnabled?.() ?? false); } catch { checking = false; /* @silent-fallback-ok — an unreadable switch reads as off: today's route */ }
+    if (checking) {
+      const meta = parseOwnerEmailMetadata(rawMetadata);
+      if (!meta.ok) {
+        res.status(400).json({ error: 'invalid-metadata', detail: `metadata may carry only ${OWNER_EMAIL_METADATA_KEYS.join(', ')} (strings).` });
+        return;
+      }
+      if (await deps.checkOutbound!(`${subject}\n\n${text}`, { topicId, emailId: id, metadata: meta.metadata }, res)) return;
+    }
     if (!deps.holdsLease()) {
       if (!deps.forwardToHolder) {
         res.status(503).json({ error: 'holder-unreachable' });

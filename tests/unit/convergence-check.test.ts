@@ -412,45 +412,25 @@ describe('Convergence Check', () => {
     });
   });
 
-  // ── Category 8: Spec-Review Link ───────────────────────────────────
+  // ── Category 8: Spec-Review Link (retired) ─────────────────────────
+  // Moved to the owner delivery point as the outbound rule B27_SPEC_REVIEW_UNLINKED
+  // (docs/specs/spec-review-link-at-delivery.md). The hook cannot see who a message is
+  // for, so every old blocking shape must now pass it, on any agent.
 
-  describe('Category 8: Spec-Review Link', () => {
-    it('flags a spec PR handed over for review with no rendered view link', () => {
-      const result = runCheck(
-        'Spec is up for your review: PR https://github.com/JKHeadley/instar/pull/670. Nothing builds until you approve.',
-      );
-      expect(result.exitCode).toBe(1);
-      expect(result.output).toContain('SPEC_REVIEW_LINK');
-    });
-
-    it('flags a docs/specs file referenced for sign-off with no link', () => {
-      const result = runCheck('Please sign off on docs/specs/FOO-SPEC.md when you can.');
-      expect(result.exitCode).toBe(1);
-      expect(result.output).toContain('SPEC_REVIEW_LINK');
-    });
-
-    it('passes when a document /docs/ link is present (documents replace pages, instar-document-viewer §3.9b)', () => {
-      const result = runCheck(
-        'Spec ready for your review at http://localhost:4040/docs/abc12345-c4e6-4636-b97f-2e6ea4e32af9 — full spec at https://github.com/JKHeadley/instar/pull/670',
-      );
-      expect(result.exitCode).toBe(0);
-    });
-
-    it('passes when a rendered /view/ link is present', () => {
-      // localhost is whitelisted by the URL-provenance check; the /view/ path
-      // is what criterion 8 looks for.
-      const result = runCheck(
-        'Spec ready for your review at http://localhost:4040/view/abc12345-c4e6-4636-b97f-2e6ea4e32af9 — full spec at https://github.com/JKHeadley/instar/pull/670',
-      );
-      expect(result.exitCode).toBe(0);
-    });
-
-    it('does NOT fire on an ordinary code-PR review (no spec)', () => {
-      const result = runCheck(
-        'Can you review https://github.com/JKHeadley/instar/pull/500 when you get a chance?',
-      );
-      expect(result.exitCode).toBe(0);
-    });
+  describe('Category 8: Spec-Review Link (retired from the hook)', () => {
+    const oldBlockingShapes = [
+      'Spec is up for your review: PR https://github.com/JKHeadley/instar/pull/670. Nothing builds until you approve.',
+      'Please sign off on docs/specs/FOO-SPEC.md when you can.',
+      'Review verdict for docs/specs/foo.md: approved, ready for build.',
+      'Ready for your review: docs/specs/spec-review-link-at-delivery.md (converged).',
+    ];
+    for (const message of oldBlockingShapes) {
+      it(`no longer blocks: ${message.slice(0, 60)}`, () => {
+        const result = runCheck(message);
+        expect(result.output).not.toContain('SPEC_REVIEW_LINK');
+        expect(result.exitCode).toBe(0);
+      });
+    }
   });
 
   // ── Multi-category detection ───────────────────────────────────────

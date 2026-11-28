@@ -348,7 +348,7 @@ node skills/spec-converge/scripts/publish-spec-review.mjs \
 
 `publish-spec-review.mjs` is the sanctioned path. It (1) resolves the ELI16 companion via the same convention the commit-time gate enforces (`scripts/eli16-overview-check.mjs`) and refuses if it is missing or a stub; (2) renders it as an auth-gated Private View (`POST /view` on port 4042, `INSTAR_AUTH_TOKEN`); (3) **verifies the tunnel link returns HTTP 200 before it is ever sent** — no broken links; (4) composes and delivers the review message (rendered ELI16 link first, full-spec PR link second).
 
-Backstop (Structure > Willpower): the pre-messaging gate (`convergence-check.sh`, criterion 8) **blocks** any hand-sent spec-review message that lacks a rendered `/view/` link, so the requirement cannot be silently skipped even if the script is bypassed.
+Backstop (Structure > Willpower): where it is switched on (development agents first, `toneGate.specReviewLinks.enabled`), the server's outbound check hands back a reply to the person that hands over a spec with no readable link (rule `B27_SPEC_REVIEW_UNLINKED`, judged by meaning, overridable with a reason). It runs only on routes that reach a person, so review verdicts between the agent's own sessions on the local bus are never blocked. The old pre-messaging hook criterion 8 is retired (docs/specs/spec-review-link-at-delivery.md).
 
 The skill does NOT auto-apply `approved: true`. The approver applies it explicitly by editing the frontmatter, with `approved-by` recording who approved and why.
 

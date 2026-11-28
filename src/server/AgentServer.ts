@@ -6825,6 +6825,12 @@ export class AgentServer {
       publisher: options.publisher ?? null,
       viewer: options.viewer ?? null,
       documentsReplaceViews: () => this.documentsReplaceViews(),
+      // spec-review-link-at-delivery §1: owner-level existence only, for B27's link facts.
+      documentFacts: (docId: string) => {
+        if (!isDocumentsEnabled(options.config)) return null;
+        const f = this.openDocuments(options.config.stateDir)?.service.facts(docId);
+        return f ? { tombstoned: f.tombstoned, purged: f.purged } : null;
+      },
       publishSystemDocument: (title: string, markdown: string, preferred?: string | null) => this.publishSystemDocument(title, markdown, preferred),
       systemDocumentLink: (id: string) => this.systemDocumentLink(id),
       tunnel: options.tunnel ?? null,

@@ -45,7 +45,7 @@ describe('MessagingToneGate — B21_USER_TASK_SUBSTITUTION', () => {
     expect(RULE_DISPOSITIONS['B21_USER_TASK_SUBSTITUTION']).toBe('advisory');
     // Every OTHER rule keeps its blocking disposition until its own approved migration.
     for (const rule of VALID_RULES) {
-      if (rule !== 'B2_FILE_PATH' && rule !== 'B21_USER_TASK_SUBSTITUTION' && rule !== 'B22_SURFACE_REFERRAL' && rule !== 'B23_UNSOURCED_ATTRIBUTION' && rule !== 'B24_OLD_VIEW_LINK' && rule !== 'B26_WAITING_ASK_UNLINKED') {
+      if (rule !== 'B2_FILE_PATH' && rule !== 'B21_USER_TASK_SUBSTITUTION' && rule !== 'B22_SURFACE_REFERRAL' && rule !== 'B23_UNSOURCED_ATTRIBUTION' && rule !== 'B24_OLD_VIEW_LINK' && rule !== 'B26_WAITING_ASK_UNLINKED' && rule !== 'B27_SPEC_REVIEW_UNLINKED') {
         expect(RULE_DISPOSITIONS[rule]).toBe('blocking');
       }
     }

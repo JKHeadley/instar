@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-28T14:02:47.332Z",
+  "slug": "spec-review-link-at-delivery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 576,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "skills/spec-converge/SKILL.md",
+      "src/core/MessagingToneGate.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/specReviewHandoff.ts",
+      "src/core/types.ts",
+      "src/data/awareness/spec-review-link-at-delivery.md",
+      "src/data/feature-ladders.json",
+      "src/server/AgentServer.ts",
+      "src/server/emailRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/convergence-check.sh"
+    ],
+    "addedLines": 534,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

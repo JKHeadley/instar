@@ -193,6 +193,22 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'An advisory nudge only: a reasoned override always sends, so it can delay a message but never hold or drop it. It reads local facts (link shapes, the local message log, the local Work Board) inside a 750 ms allowance, makes no external call and writes no state; the rollback is this flag.',
   },
   {
+    name: 'toneGateSpecReviewLinks',
+    configPath: 'toneGate.specReviewLinks.enabled',
+    description:
+      'Outbound rule B27: a session reply that hands the person a spec or design for review is handed back unless it carries a link that opens it readably (docs/specs/spec-review-link-at-delivery.md).',
+    justification:
+      'An advisory nudge only: an override with a reason always gets a re-review of the other rules and sends when they pass, so it can delay a message but never drop it. It reads local facts (fixed text tests, local document and view ids) with no external call; the rollback is this flag.',
+  },
+  {
+    name: 'toneGateOwnerEmailCheck',
+    configPath: 'toneGate.ownerEmailCheck.enabled',
+    description:
+      "Owner email (POST /email/send-to-owner) runs the same outbound check as every chat reply route, before any forward to the lease holder.",
+    justification:
+      'Development agents run the advisory migration, so the judgment rules there are overridable nudges; a held email is handed back to the session with a reason path, never lost. The fleet stays dark until its own replay is accepted; the rollback is this flag.',
+  },
+  {
     name: 'feedbackFactoryDrain',
     configPath: 'feedbackFactory.drain.enabled',
     description: 'Canonical feedback readiness/outbox drain cadence.',

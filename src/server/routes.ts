@@ -871,7 +871,8 @@ import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
 import { detectSurfaceReferral } from '../core/operatorSurfaceReferral.js';
 import { telegramMessageLink, slackMessageLink, appConversationLink, workCardLink, classifyAskLinks } from '../core/messageLinks.js';
-import type { WaitingAskContext, AskLinkability } from '../core/MessagingToneGate.js';
+import type { WaitingAskContext, AskLinkability, SpecReviewContext, SpecReviewLinkFact } from '../core/MessagingToneGate.js';
+import { detectSpecReviewHandoff, linkShapesString, type SpecReviewFacts, type SpecReviewLink } from '../core/specReviewHandoff.js';
 import { callerHasDocumentHome, detectOldViewLink } from '../documents/readablePages.js';
 import { signViewPath } from './middleware.js';
 import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
@@ -1441,6 +1442,11 @@ export interface RouteContext {
   viewer: PrivateViewer | null;
   /** Old-link guarantee (instar-document-viewer §3.9b): true while documents replace new read-only pages. */
   documentsReplaceViews?: () => boolean;
+  /**
+   * spec-review-link-at-delivery §1: a document's existence on THIS machine, for B27's link
+   * facts. Owner-level facts only (no title, no text), never returned to a caller.
+   */
+  documentFacts?: (docId: string) => { tombstoned: boolean; purged: boolean } | null;
   /** A document for something the system writes; null when documents do not replace pages (§3.9b). */
   publishSystemDocument?: (title: string, markdown: string, preferred?: string | null) => { id: string; url: string; primary: string } | null;
   /** The current link to a system document that still exists, or null (§3.9b). */
@@ -4506,6 +4512,23 @@ export function createRoutes(ctx: RouteContext): Router {
     try { live = ctx.liveConfig?.get<boolean | undefined>('toneGate.waitingAskLinks.enabled', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
     return resolveDevAgentGate(live ?? boot, ctx.config);
   };
+  // ── spec-review-link-at-delivery §4: two development-agent switches ──
+  /** `toneGate.specReviewLinks.enabled` (B27) / `toneGate.ownerEmailCheck.enabled` (owner email): unset = live on development agents, dark on the fleet. */
+  const devGatedToneSwitch = (key: 'specReviewLinks' | 'ownerEmailCheck'): boolean => {
+    const boot = (ctx.config as { toneGate?: Record<string, { enabled?: boolean } | undefined> }).toneGate?.[key]?.enabled;
+    let live: boolean | undefined;
+    try { live = ctx.liveConfig?.get<boolean | undefined>(`toneGate.${key}.enabled`, undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
+    return resolveDevAgentGate(live ?? boot, ctx.config);
+  };
+  const specReviewLinksOn = (): boolean => devGatedToneSwitch('specReviewLinks');
+  const ownerEmailCheckOn = (): boolean => devGatedToneSwitch('ownerEmailCheck');
+  /** §6: explicit enrollment for body capture (never dev-gated): set by hand on the measured agents only. */
+  const specReviewCaptureBodies = (): boolean => {
+    const boot = (ctx.config as { toneGate?: { specReviewLinks?: { captureBodies?: boolean } } }).toneGate?.specReviewLinks?.captureBodies;
+    let live: boolean | undefined;
+    try { live = ctx.liveConfig?.get<boolean | undefined>('toneGate.specReviewLinks.captureBodies', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
+    return (live ?? boot) === true;
+  };
   // ── sibling-machine-reach (docs/specs/sibling-machine-reach.md, CMT-2073) ──
   /** `toneGate.siblingReach.enabled`: unset = live on development agents, dark on the fleet. */
   const siblingReachOn = (): boolean => {
@@ -4613,6 +4636,68 @@ export function createRoutes(ctx: RouteContext): Router {
    * The facts B26 reads. Deterministic, never a decision; every part can be omitted
    * ("unavailable"). A failure or an overrun here only drops facts, never the review.
    */
+  // ── spec-review-link-at-delivery §1, §6 — B27 helpers ──────────────────────────────────
+  /** The channels whose session-reply routes may opt into B27 (`specReviewEligible`). */
+  const SPEC_REVIEW_CHANNELS = new Set(['telegram', 'slack', 'app', 'whatsapp', 'imessage', 'email']);
+  /** One detector link → its fact. Own-host doc/view ids are looked up locally, never fetched. */
+  function specReviewLinkFact(l: SpecReviewLink): SpecReviewLinkFact {
+    const own = ['localhost', '127.0.0.1'];
+    try { const ext = ctx.tunnel?.getExternalUrl?.('/'); if (ext) own.push(new URL(ext).host.toLowerCase()); } catch { /* @silent-fallback-ok: no tunnel host, the loopback hosts still apply */ }
+    // A bare /docs/<id> path (no host) is this agent's own address form.
+    const ownHost = l.host ? own.includes(l.host) : l.shape !== 'other';
+    const fact: SpecReviewLinkFact = { shape: l.shape, ...(ownHost ? { ownHost: true } : {}) };
+    if (!ownHost || !l.id || l.shape === 'other') return fact;
+    try {
+      if (l.shape === 'view') {
+        fact.exists = ctx.viewer?.get(l.id) ? 'yes' : 'unknown';
+      } else {
+        const f = ctx.documentFacts?.(l.id);
+        // `no` only for a document deleted here; an absent one may live on a peer (pull replication).
+        fact.exists = !f ? 'unknown' : (f.tombstoned || f.purged) ? 'no' : 'yes';
+      }
+    } catch {
+      fact.exists = 'unknown'; // @silent-fallback-ok — a failed lookup is `unknown`, never an error that drops the facts
+    }
+    return fact;
+  }
+  /**
+   * §6 evidence rows under `toneGate.specReviewLinks`. Primitive context only, no text: the
+   * channel, conversation, link shapes, the decision ref, the full SHA-256 of the judged text
+   * (the hash the gate's decision context stores), and the local evidence ref (email id).
+   * Ladder metrics filter on `reason`, so no row here counts as a grade.
+   */
+  function recordSpecReviewEvidence(
+    text: string,
+    channel: string,
+    options: { topicId?: number; attributionConversation?: string; evidenceRef?: string },
+    result: import('../core/MessagingToneGate.js').ToneReviewResult,
+    facts: SpecReviewFacts | undefined,
+    /** True when this review rendered B27. Pass and other-rule rows are written only then, so the recall sample stays B27-eligible traffic. */
+    rendered: boolean,
+  ): void {
+    try {
+      const conversation = options.attributionConversation ?? (options.topicId !== undefined ? String(options.topicId) : channel);
+      const base: Record<string, string> = {
+        channel,
+        conversation: conversation.slice(0, 120),
+        linkShapes: facts ? linkShapesString(facts.links) : 'unavailable',
+        sha256: createHash('sha256').update(text).digest('hex'),
+        ...(result.decisionRef ? { decisionRef: result.decisionRef } : {}),
+        ...(options.evidenceRef ? { evidenceRef: options.evidenceRef.slice(0, 80) } : {}),
+      };
+      const row = (reason: string): void => { featureEvidence.record('toneGate.specReviewLinks', { kind: 'outcome', reason, context: base }); };
+      if (result.strayCitation) row('stray-citation');
+      if (!rendered) return;
+      if (result.pass) {
+        if (result.degradedToDeterministic || result.failedOpen || result.failedOpenOperatorChannel || result.budgetExceeded) row('unjudged-pass');
+        else if (facts?.reference && facts.handoffWording) row('signal-passed');
+        else if (Math.random() < 0.1) row('sampled-pass');
+      } else if (result.rule && result.rule !== 'B27_SPEC_REVIEW_UNLINKED' && !result.failedClosed && Math.random() < 0.1) {
+        row('other-rule');
+      }
+    } catch { /* @silent-fallback-ok — evidence is observability only; it never affects the verdict or the send */ }
+  }
+
   async function gatherWaitingAskFacts(text: string, channel: 'telegram' | 'slack' | 'app'): Promise<WaitingAskContext> {
     const out: WaitingAskContext = {};
     let scan: ReturnType<typeof classifyAskLinks> | null = null;
@@ -5022,35 +5107,78 @@ export function createRoutes(ctx: RouteContext): Router {
   // silently discard exactly the compliances worth recording.
   const ADVISORY_PENDING_TTL_MS = 10 * 60 * 1000;
   const ADVISORY_PENDING_MAX = 500;
-  const pendingAdvisories = new Map<number, { rule: string; decisionRef?: string; textSha: string; at: number }>();
+  // Keyed by channel AND topic (spec-review-link-at-delivery §3): an email nudge and a chat
+  // reply in the same topic must never credit each other as a revision.
+  const pendingAdvisories = new Map<string, { rule: string; decisionRef?: string; textSha: string; at: number }>();
 
   function sha256Short(s: string): string {
     return createHash('sha256').update(s).digest('hex').slice(0, 32);
   }
 
-  function notePendingAdvisory(topicId: number | undefined, rule: string, decisionRef: string | undefined, text: string): void {
+  function notePendingAdvisory(channel: string, topicId: number | undefined, rule: string, decisionRef: string | undefined, text: string): void {
     if (typeof topicId !== 'number') return;
+    const key = `${channel}:${topicId}`;
     // Bounded: drop the oldest rather than grow without limit.
     if (pendingAdvisories.size >= ADVISORY_PENDING_MAX) {
       const oldest = [...pendingAdvisories.entries()].sort((a, b) => a[1].at - b[1].at)[0];
       if (oldest) pendingAdvisories.delete(oldest[0]);
     }
-    pendingAdvisories.set(topicId, { rule, decisionRef, textSha: sha256Short(text), at: Date.now() });
+    pendingAdvisories.set(key, { rule, decisionRef, textSha: sha256Short(text), at: Date.now() });
+  }
+
+  // ── spec-review-link-at-delivery §2: the override chain ─────────────────────────────
+  // The gate cites ONE rule per verdict. An acknowledgment answering a review that rendered
+  // B27 (or any text already in a chain) does not send at once: its rule joins the chain for
+  // this exact text, and the text is reviewed again with every chained rule left out of the
+  // prompt and of the accepted citations. It sends only when such a review passes (or
+  // reaches the gate's documented fallback). So no rule that was never cleared is skipped.
+  // Keyed by channel, conversation and text hash; bounded; same window as a revision.
+  const OVERRIDE_CHAIN_MAX = 500;
+  const overrideChains = new Map<string, { rules: Map<string, { reason: string; decisionRef?: string }>; at: number }>();
+  function overrideChainKey(channel: string, opts: { topicId?: number; attributionConversation?: string }, text: string): string {
+    const conv = opts.attributionConversation ?? (opts.topicId !== undefined ? String(opts.topicId) : '');
+    return `${channel}|${conv}|${sha256Short(text)}`;
+  }
+  function readOverrideChain(key: string): { rules: Map<string, { reason: string; decisionRef?: string }>; at: number } | undefined {
+    const c = overrideChains.get(key);
+    if (!c) return undefined;
+    if (Date.now() - c.at > ADVISORY_PENDING_TTL_MS) { overrideChains.delete(key); return undefined; }
+    return c;
+  }
+  function writeOverrideChain(key: string, c: { rules: Map<string, { reason: string; decisionRef?: string }>; at: number }): void {
+    if (!overrideChains.has(key) && overrideChains.size >= OVERRIDE_CHAIN_MAX) {
+      const oldest = [...overrideChains.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (oldest) overrideChains.delete(oldest[0]);
+    }
+    overrideChains.set(key, c);
+  }
+  /** The chained text finally sends: grade every acknowledged rule as an override, only now. */
+  function settleOverrideChain(key: string, channel: string): void {
+    const c = overrideChains.get(key);
+    if (!c) return;
+    overrideChains.delete(key);
+    for (const [rule, ack] of c.rules) {
+      recordToneAdvisoryReaction({ decisionRef: ack.decisionRef, rule, reaction: 'override', reason: ack.reason });
+      if (rule === 'B27_SPEC_REVIEW_UNLINKED') {
+        try { featureEvidence.record('toneGate.specReviewLinks', { kind: 'fired', reason: 'b27-override-sent', context: { channel } }); } catch { /* @silent-fallback-ok — evidence only */ }
+      }
+    }
   }
 
   /** Returns the reaction to record, if this passing send revises a pending advisory. */
-  function takeRevisionOf(topicId: number | undefined, text: string): { rule: string; decisionRef?: string } | null {
+  function takeRevisionOf(channel: string, topicId: number | undefined, text: string): { rule: string; decisionRef?: string } | null {
     if (typeof topicId !== 'number') return null;
-    const p = pendingAdvisories.get(topicId);
+    const key = `${channel}:${topicId}`;
+    const p = pendingAdvisories.get(key);
     if (!p) return null;
     if (Date.now() - p.at > ADVISORY_PENDING_TTL_MS) {
-      pendingAdvisories.delete(topicId);
+      pendingAdvisories.delete(key);
       return null;
     }
     // Identical text is not a revision — it is a resend, and a resend that
     // happens to pass is NOT evidence the gate was right.
     if (sha256Short(text) === p.textSha) return null;
-    pendingAdvisories.delete(topicId);
+    pendingAdvisories.delete(key);
     return { rule: p.rule, decisionRef: p.decisionRef };
   }
 
@@ -5258,6 +5386,10 @@ export function createRoutes(ctx: RouteContext): Router {
       liveArtefactSignals?: boolean;
       /** A resend nobody can react to (a sentinel redrive): advisory-only signals that need a reaction are skipped. */
       noReactionPossible?: boolean;
+      /** spec-review-link-at-delivery §1: set ONLY by the routes that carry a session's own reply to a person. */
+      specReviewEligible?: boolean;
+      /** §6: a local id joining B27 evidence rows to their message (the owner-email outbox id). */
+      evidenceRef?: string;
       /**
        * WHY the agent is overriding — REQUIRED alongside `toneAdvisoryAck`.
        * Recorded as the evidence note on the `tone-agent-override-v1` outcome.
@@ -5296,8 +5428,11 @@ export function createRoutes(ctx: RouteContext): Router {
           status: 422,
           reason: 'localhost-link-guard',
           body: {
-            error:
-              `Message blocked: contains a machine-local link (${localLink.match}) that the user cannot open from their device. ` +
+            error: channel === 'email'
+              // spec-review-link-at-delivery §3: the email route takes no allowLocalhostLink.
+              ? `Email not sent: it contains a machine-local link (${localLink.match}) that the owner cannot open from their device. ` +
+                `Remove the link, or replace it with the public tunnel address (GET /tunnel → url + path).`
+              : `Message blocked: contains a machine-local link (${localLink.match}) that the user cannot open from their device. ` +
               `Replace it with the public tunnel URL (GET /tunnel → url + path), or omit the link and say it will follow. ` +
               `If the operator explicitly asked for the raw local URL, resend with metadata.allowLocalhostLink: true.`,
             blockedBy: 'localhost-link-guard',
@@ -5599,7 +5734,9 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
 
-      if (!options.allowDuplicate && ctx.outboundDedupGate && recentOutbound.length > 0) {
+      // spec-review-link-at-delivery §3: "email me that" repeats a chat report on purpose, so an
+      // owner email is never compared against the topic's chat messages.
+      if (!options.allowDuplicate && channel !== 'email' && ctx.outboundDedupGate && recentOutbound.length > 0) {
         try {
           const dupResult = ctx.outboundDedupGate.check({ text, recent: recentOutbound });
           signals.duplicate = {
@@ -5652,6 +5789,35 @@ export function createRoutes(ctx: RouteContext): Router {
         } catch {
           try { featureEvidence.record('toneGate.waitingAskLinks', { kind: 'error', reason: 'facts-gather-failed', context: { channel } }); } catch { /* @silent-fallback-ok — evidence is observability only */ }
           // @silent-fallback-ok — B26 is advisory: if its context cannot be built the rule is not rendered and the review runs as before.
+        }
+      }
+
+      // spec-review-link-at-delivery §1-§2 — the override chain for this exact text, and B27.
+      // Eligibility is fixed by route (opt-in), never by the text; when eligible and the switch
+      // is on, the rule is rendered whatever the detector finds.
+      const chainKey = overrideChainKey(channel, options, text);
+      const chain = readOverrideChain(chainKey);
+      const chainOmit = chain ? [...chain.rules.keys()] : [];
+      let specReview: SpecReviewContext | undefined;
+      let specFacts: SpecReviewFacts | undefined;
+      if (options.specReviewEligible === true && SPEC_REVIEW_CHANNELS.has(channel) && kindForSignals === 'reply'
+        && options.liveArtefactSignals === true && options.noReactionPossible !== true
+        && !chainOmit.includes('B27_SPEC_REVIEW_UNLINKED')) {
+        let on = false;
+        try { on = specReviewLinksOn(); } catch { on = false; /* @silent-fallback-ok — an unreadable switch reads as off: B27 is advisory and the review runs without it */ }
+        if (on) {
+          let facts: SpecReviewContext['facts'];
+          try {
+            specFacts = detectSpecReviewHandoff(text);
+            facts = { reference: specFacts.reference, handoffWording: specFacts.handoffWording, links: specFacts.links.map(specReviewLinkFact) };
+          } catch {
+            facts = undefined;
+            try { featureEvidence.record('toneGate.specReviewLinks', { kind: 'error', reason: 'detector-failed', context: { channel } }); } catch { /* @silent-fallback-ok — evidence only */ }
+            // @silent-fallback-ok — the rule is still rendered, judged from the text alone.
+          }
+          let capture = false;
+          try { capture = specReviewCaptureBodies(); } catch { capture = false; /* @silent-fallback-ok — no capture: evidence rows record it as ungradable */ }
+          specReview = { ...(facts ? { facts } : {}), ...(capture ? { captureBody: true } : {}) };
         }
       }
 
@@ -5780,6 +5946,9 @@ export function createRoutes(ctx: RouteContext): Router {
           // B26 (waiting-on-you-links §3): attached only for a live-session reply from a caller that
           // can react to a nudge. Absent → the rule is not rendered and the prompt is unchanged.
           ...(waitingAsk ? { waitingAsk } : {}),
+          // B27 + the override chain (spec-review-link-at-delivery §2).
+          ...(specReview ? { specReview } : {}),
+          ...(chainOmit.length > 0 ? { omitRules: chainOmit } : {}),
           // jev-signal-live: only callers with an acknowledge-and-override path
           // opt in (see the option's doc). Everyone else — and every non-route
           // caller of the gate — keeps the detector-only path.
@@ -5897,6 +6066,8 @@ export function createRoutes(ctx: RouteContext): Router {
         signals,
         result,
       });
+      // spec-review-link-at-delivery §6 — B27 evidence (never affects the verdict or the send).
+      if (specReview || result.strayCitation) recordSpecReviewEvidence(text, channel, options, result, specFacts, !!specReview);
 
       // ── Compliance credit ────────────────────────────────────────────────
       // The revised re-send passed → the ORIGINAL verdict is graded `right`.
@@ -5910,7 +6081,9 @@ export function createRoutes(ctx: RouteContext): Router {
       // counterpart would leave the sample permanently skewed. The explicit
       // `toneAdvisoryComplied` remains honored as a direct declaration.
       if (result.pass) {
-        const revised = takeRevisionOf(options.topicId, text);
+        // §2: a chained text that now passes sends — grade its acknowledged rules only now.
+        if (chain) settleOverrideChain(chainKey, channel);
+        const revised = takeRevisionOf(channel, options.topicId, text);
         // sibling-machine-reach: a revised send after a hinted B21 is an outbound-message
         // outcome only (the message was rewritten), never proof a helper did the work.
         if (options.topicId !== undefined && siblingHintedTopics.has(options.topicId) && (revised || options.toneAdvisoryComplied === 'B21_USER_TASK_SUBSTITUTION')) {
@@ -6021,6 +6194,16 @@ export function createRoutes(ctx: RouteContext): Router {
               });
             } catch { /* @silent-fallback-ok — evidence is observability only; it never affects the verdict or the send */ }
           }
+          if (result.rule === 'B27_SPEC_REVIEW_UNLINKED') {
+            const b27Ack = options.toneAdvisoryAck === result.rule && (options.toneAdvisoryAckReason ?? '').trim().length >= TONE_ADVISORY_REASON_MIN;
+            try {
+              featureEvidence.record('toneGate.specReviewLinks', {
+                kind: 'fired',
+                reason: b27Ack ? 'b27-cited-ack' : 'b27-cited',
+                context: { channel, reaction: b27Ack ? 'ack-chained' : 'handed-back', ...(result.decisionRef ? { decisionRef: result.decisionRef } : {}) },
+              });
+            } catch { /* @silent-fallback-ok — evidence is observability only */ }
+          }
           const reactionRecordable = Boolean(result.decisionRef && decisionQualityRecordingLive());
           if (options.toneAdvisoryAck === result.rule) {
             // The override REASON is structurally required, not requested. The
@@ -6047,6 +6230,24 @@ export function createRoutes(ctx: RouteContext): Router {
                 },
               };
             }
+            // spec-review-link-at-delivery §2 — the override chain. An acknowledgment answering a
+            // review that rendered B27, or any text already in a chain, never sends on its own:
+            // the rule joins the chain (written BEFORE the re-review), and the same text is judged
+            // again with every chained rule left out. Its grade is recorded only when it sends.
+            if (specReview || chain) {
+              const c = chain ?? { rules: new Map<string, { reason: string; decisionRef?: string }>(), at: Date.now() };
+              c.rules.set(result.rule, { reason, decisionRef: options.toneAdvisoryDecisionRef ?? result.decisionRef });
+              c.at = Date.now();
+              writeOverrideChain(chainKey, c);
+              logToneGateDecision({ text, channel, topicId: options.topicId, signals, result: { ...result, advisoryOverridden: true, overrideReasonHead: scrubForStore(reason).text.slice(0, 120) }, reason: 'override-chain' });
+              return evaluateOutbound(text, channel, {
+                ...options,
+                toneAdvisoryAck: undefined,
+                toneAdvisoryAckReason: undefined,
+                toneAdvisoryDecisionRef: undefined,
+                toneAdvisoryComplied: undefined,
+              });
+            }
             const overridden = {
               ...result,
               advisoryOverridden: true,
@@ -6072,7 +6273,7 @@ export function createRoutes(ctx: RouteContext): Router {
           }
           // Remember it so a later revised send is credited WITHOUT the agent
           // having to carry metadata back (the asymmetry fix).
-          notePendingAdvisory(options.topicId, result.rule, result.decisionRef, text);
+          notePendingAdvisory(channel, options.topicId, result.rule, result.decisionRef, text);
           return {
             ok: false,
             status: 422,
@@ -6151,6 +6352,10 @@ export function createRoutes(ctx: RouteContext): Router {
       liveArtefactSignals?: boolean;
       /** A resend nobody can react to (a sentinel redrive); see evaluateOutbound. */
       noReactionPossible?: boolean;
+      /** spec-review-link-at-delivery §1; see evaluateOutbound. */
+      specReviewEligible?: boolean;
+      /** spec §6; see evaluateOutbound. */
+      evidenceRef?: string;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -6268,6 +6473,8 @@ export function createRoutes(ctx: RouteContext): Router {
     review: (record, input) => evaluateOutbound(input.text, 'telegram', {
       ...(record.destination.topicId === null ? {} : { topicId: Number(record.destination.topicId) }),
       messageKind: record.producerKind === 'session' ? 'reply' : 'automated',
+      // spec-review-link-at-delivery §1: only a session's own message opts into B27.
+      ...(record.producerKind === 'session' ? { specReviewEligible: true } : {}),
       ...input.reaction,
       // The origin boundary carries the sender's reaction (override/complied), so an advisory is overridable here.
       liveArtefactSignals: true,
@@ -19244,6 +19451,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     checkConfirmPin: (req, res) => checkPublicPin(req, res),
     holdsLease: () => { try { return ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true; } catch { return false; } }, // @silent-fallback-ok — an unreadable lease reads as not held: forward, never send twice
     forwardToHolder: (input) => (ctx.emailForwardToHolder ? ctx.emailForwardToHolder(input) : Promise.resolve({ ok: false as const, reason: 'holder-unreachable' })),
+    // spec-review-link-at-delivery §3: the owner email gets the outbound check every owner route runs.
+    checkEnabled: () => ownerEmailCheckOn(),
+    checkOutbound: (text, input, res) => checkOutboundMessage(text, 'email', res, {
+      topicId: input.topicId,
+      attributionConversation: `email:${input.topicId}`,
+      messageKind: 'reply',
+      specReviewEligible: true,
+      evidenceRef: input.emailId,
+      ...toneAdvisoryMetadata(input.metadata),
+    }),
   });
   registerEcosystemIdeaRoutes(router, { ecosystem: () => ctx.ecosystemIdeas?.() ?? null, checkPin: (req, res) => checkMandatePin(req, res) });
 
@@ -23309,6 +23526,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const gateLocally = async (): Promise<boolean> => {
       if (await checkOutboundMessage(text, 'telegram', res, {
         topicId,
+        // spec-review-link-at-delivery §1: a session's own reply to a person.
+        specReviewEligible: true,
         allowDebugText,
         allowDuplicate,
         allowLocalhostLink,
@@ -25330,6 +25549,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (
       await checkOutboundMessage(text, 'slack', res, {
         attributionConversation: String(channelId),
+        // spec-review-link-at-delivery §1: a session's own reply to a person.
+        specReviewEligible: true,
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
         // Channel parity: the override/compliance evidence path is not a
@@ -25609,7 +25830,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ? req.body.metadata as Record<string, unknown> : undefined;
     // With no caption, the file names are what the operator reads: they go through the same check.
     const outboundText = text.trim() ? text : (preparedFiles?.snapshots ?? []).map(s => s.filename).join('\n');
-    if (outboundText.trim() && await checkOutboundMessage(outboundText, 'app', res, { attributionConversation: key, ...toneAdvisoryMetadata(replyMetadata) })) {
+    if (outboundText.trim() && await checkOutboundMessage(outboundText, 'app', res, { attributionConversation: key, specReviewEligible: true, ...toneAdvisoryMetadata(replyMetadata) })) {
       if (preparedFiles) discardPrepared(app.media, preparedFiles);
       return;
     }
@@ -30199,6 +30420,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (
       await checkOutboundMessage(text, 'whatsapp', res, {
         attributionConversation: String(jid),
+        // spec-review-link-at-delivery §1: a session's own reply to a person.
+        specReviewEligible: true,
         allowDebugText: metadata?.allowDebugText === true,
         allowDuplicate: metadata?.allowDuplicate === true,
         // Channel parity for the advisory migration — an override path that
@@ -30264,6 +30487,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (
         await checkOutboundMessage(text, 'imessage', res, {
           attributionConversation: decodeURIComponent(recipient),
+          // spec-review-link-at-delivery §1: a session's own reply to a person.
+          specReviewEligible: true,
           allowDebugText: imessageMetadata?.allowDebugText === true,
           allowDuplicate: imessageMetadata?.allowDuplicate === true,
           ...toneAdvisoryMetadata(imessageMetadata),
