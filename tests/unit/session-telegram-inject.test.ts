@@ -103,6 +103,7 @@ describe('SessionManager.injectTelegramMessage', () => {
 
   it('dedupes a repeated Telegram messageId — delivers a single user message once', () => {
     const sm = mkSm();
+    vi.spyOn(sm, 'injectMessage').mockReturnValue(true);
     const topicId = 770111;
     const messageId = 555001;
 
@@ -137,11 +138,20 @@ describe('SessionManager.injectTelegramMessage', () => {
 
   it('dedup is per-session — same messageId to two sessions both deliver', () => {
     const sm = mkSm();
+    vi.spyOn(sm, 'injectMessage').mockReturnValue(true);
     const topicId = 770144;
     const messageId = 555777;
     sm.injectTelegramMessage('sess-x', topicId, longText, undefined, undefined, undefined, messageId);
     sm.injectTelegramMessage('sess-y', topicId, longText, undefined, undefined, undefined, messageId);
     expect(countFilesFor(topicId)).toBe(2);
+  });
+
+  it.each(['short', 'L'.repeat(600)])('does not call an uncertain failed message a successful duplicate (%s)', (text) => {
+    const sm = mkSm();
+    const inject = vi.spyOn(sm, 'injectMessage').mockReturnValue(false);
+    expect(sm.injectTelegramMessage('refused', 770155, text, undefined, undefined, undefined, 901)).toBe(false);
+    expect(sm.injectTelegramMessage('refused', 770155, text, undefined, undefined, undefined, 901)).toBe(false);
+    expect(inject).toHaveBeenCalledTimes(1); // Unknown effects stay suppressed, without claiming Delivered.
   });
 
   it('Gemini pending Telegram injection emits a detected reply from a completed final pane block', async () => {

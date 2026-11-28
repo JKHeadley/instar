@@ -1,0 +1,5 @@
+---
+title: Follow up when a message attempt cannot reach its conversation
+requires: telegram
+---
+A Telegram attempt refused before dispatch must not be called Delivered. The failure notice describes this attempt, not the outcome of any earlier uncertain attempt. The server retains an attention record and an agent-owned commitment when those stores are available. Check the authenticated `GET /attention?scope=pool` and `GET /commitments?scope=mesh` reads at `http://localhost:{{port}}`; the latter combines stored replicas and can omit an unavailable owner's record before replication, so an empty list is not proof that no follow-up exists. Investigate the readiness failure and report the verified outcome or a supported recovery option. Do not automatically resend, replay historical unknown deliveries, or treat a later session identity or acknowledged notice as delivery proof. If persistence or notice delivery could not be confirmed, say so. These records do not guarantee eventual delivery and do not change native identity binding or dispatch authority.

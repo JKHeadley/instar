@@ -804,7 +804,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private pendingPromises: Map<number, PendingPromise> = new Map(); // key = topicId
 
   // Topic message callback — fires on every incoming topic message
-  public onTopicMessage: ((message: Message) => void | Promise<void>) | null = null;
+  public onTopicMessage: ((message: Message) => void | { refused: true } | Promise<void | { refused: true }>) | null = null;
 
   // Inbound media copy (docs/specs/mobile-native-chat-media.md §4.9): wired by the server only
   // when native app media is on. Called after a successful download with the local file; the
@@ -1380,6 +1380,12 @@ export class TelegramAdapter implements MessagingAdapter {
   /** The forum chat this agent lives in. */
   getChatId(): string {
     return this.config.chatId;
+  }
+
+  /** Public bot/forum identity only; never return the credential suffix. */
+  getInboundSourceNamespace(): string {
+    const botId = /^([0-9]+):/.exec(this.config.token)?.[1] ?? 'unidentified-bot';
+    return `${botId}:${this.config.chatId}`;
   }
 
   /** Callback to inject a response into a tmux session. Wired by server.ts. */
@@ -6598,6 +6604,17 @@ export class TelegramAdapter implements MessagingAdapter {
         console.log(`[telegram] Loaded ${this.attentionItems.size} attention items`);
       }
     } catch { /* file doesn't exist yet */ }
+  }
+
+  /** Saving attention is historically best-effort; verify disk before claiming durability. */
+  isAttentionItemPersisted(item: AttentionItem): boolean {
+    try {
+      const data = JSON.parse(fs.readFileSync(this.attentionFilePath, 'utf8')) as { items?: AttentionItem[] };
+      return Array.isArray(data.items) && data.items.some(row => row.id === item.id && JSON.stringify(row) === JSON.stringify(item));
+    } catch {
+      // @silent-fallback-ok: false is an unconfirmed disk read, which the caller reports explicitly.
+      return false;
+    }
   }
 
   private saveAttentionItems(): void {

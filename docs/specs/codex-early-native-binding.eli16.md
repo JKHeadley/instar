@@ -1,0 +1,9 @@
+# Know When a Message Did Not Reach the Conversation
+
+A conversation can be running but unable to accept your next message because its existing safety checks cannot verify the destination. A bug currently remembers that failed attempt as if it succeeded. If the same message is forwarded again, the bot can then say Delivered without sending it. This repair removes that false success.
+
+When the existing destination check refuses an attempt before sending, the response says exactly that. It does not claim to know whether an earlier attempt delivered, promise an automatic retry, or ask you to resend a message whose outcome is uncertain. An attention record retains the failure, and the agent receives an existing tracked obligation to investigate and report the verified outcome or a supported recovery option.
+
+The tracked obligation points back to the exact original message so the agent can investigate it. That reference does not grant permission to resend. Those records are not delivery receipts. A later session identity, an acknowledged notice, or an empty remote tracking list does not prove that your message arrived. If saving a record or sending the notice fails, the repair reports that failure rather than claiming success. Existing tracking can be unavailable on another machine before its replica arrives; the agent must keep that limit visible.
+
+The repair does not change native identity binding, install hooks, replay old messages, create a new inbox or weaken the dispatch safety checks. Earlier work on capturing identity sooner is parked separately because it needs an unresolved incarnation-safety contract. This narrower increment fixes false Delivered and gives the agent responsibility for following up. It does not guarantee eventual delivery. Tests and normal full verification must still pass before it ships.

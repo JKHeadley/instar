@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "slug": "telegram-injection-failure-truth",
+  "sessionId": "dd749eae-9567-435e-9e95-a9679df8aaea",
+  "timestamp": "2026-11-23T10:26:39.461Z",
+  "artifactPath": "upgrades/side-effects/telegram-injection-failure-truth.md",
+  "artifactSha256": "2003de5cf4a51af50c8637c63d11fb71ff3ea6afec472c215d743a660a6500ce",
+  "specPath": "docs/specs/codex-early-native-binding.md",
+  "coveredFiles": [
+    "docs/specs/codex-early-native-binding.eli16.md",
+    "docs/specs/codex-early-native-binding.md",
+    "docs/specs/codex-early-native-binding.parked.md",
+    "docs/specs/reports/codex-early-native-binding-convergence.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/data/awareness/telegram-injection-failure.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegramInjectionFailure.ts",
+    "src/server/routes.ts",
+    "tests/e2e/telegram-injection-failure-lifecycle.test.ts",
+    "tests/helpers/telegramInjectionFailureFixture.ts",
+    "tests/integration/telegram-forward-refused-inbound.test.ts",
+    "tests/integration/telegram-injection-failure-routes.test.ts",
+    "tests/unit/awareness-entry-registry.test.ts",
+    "tests/unit/session-manager-stage-b-framework-scope.test.ts",
+    "tests/unit/session-telegram-inject.test.ts",
+    "tests/unit/session-telegram-refusal-observation.test.ts",
+    "tests/unit/telegram-injection-failure.test.ts",
+    "upgrades/next/telegram-injection-failure-truth.md",
+    "upgrades/side-effects/telegram-injection-failure-truth.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Chief-authorized narrowed defect closure with full-convergence false; delivery outcome and durable tracking boundaries; actual independent review, targeted tiers and startup, complete final-head verification required.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Successful dedup receipt was inserted before inject completion; false retry success could propagate into Delivered. Exact originating prior commit has not been attributed; this does not claim the native baseline capture cause repaired."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The added loss notice and durable source record execute once per inbound dispatch refusal, driven by the received message, not a new timer or autonomous retry/controller. Existing CommitmentTracker externalKey dedup and existing PromiseBeacon caps/cadence are reused unchanged. This increment starts no replay, retry, respawn, restart, kill or new recurring loop."
+  }
+}

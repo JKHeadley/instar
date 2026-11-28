@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-23T10:25:09.303Z",
+  "slug": "telegram-injection-failure-truth",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 191,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/data/awareness/telegram-injection-failure.md",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegramInjectionFailure.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 178,
+    "deletedLines": 13
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Successful dedup receipt was inserted before inject completion; false retry success could propagate into Delivered. Exact originating prior commit has not been attributed; this does not claim the native baseline capture cause repaired."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

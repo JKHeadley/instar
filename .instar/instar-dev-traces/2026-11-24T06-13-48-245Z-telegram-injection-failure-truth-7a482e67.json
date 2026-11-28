@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "telegram-injection-failure-truth",
+  "sessionId": "98b2a4db-db72-4f38-bc3a-4087791d97bf",
+  "timestamp": "2026-11-24T06:13:48.245Z",
+  "artifactPath": "upgrades/side-effects/telegram-injection-failure-truth.md",
+  "artifactSha256": "ae5d253c322a2836bad229ab5aac560625113a55957b1e08c71b750b5c428769",
+  "specPath": "docs/specs/codex-early-native-binding.md",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegramInjectionFailure.ts",
+    "upgrades/side-effects/telegram-injection-failure-truth.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "No behavior change. Retain the original delivery truth specification and independent review for this repair.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
