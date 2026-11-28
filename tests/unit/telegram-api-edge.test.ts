@@ -69,8 +69,8 @@ describe('TelegramAdapter — API edge cases', () => {
       expect(source).toContain('60_000');
     });
 
-    it('uses shorter timeout for regular API calls', () => {
-      expect(source).toContain('15_000');
+    it('uses the shared send timeout for regular API calls', () => {
+      expect(source).toContain(': TELEGRAM_API_CALL_TIMEOUT_MS');
     });
 
     it('uses AbortController for timeout enforcement', () => {

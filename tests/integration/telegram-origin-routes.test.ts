@@ -10,7 +10,7 @@ import request from 'supertest';
 import { createRoutes } from '../../src/server/routes.js';
 import { TelegramOriginRuntime } from '../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
 import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin/OriginSessionRegistry.js';
-import { telegramFetch } from '../../src/messaging/telegram-egress.js';
+import { telegramFetch, TELEGRAM_API_CALL_TIMEOUT_MS } from '../../src/messaging/telegram-egress.js';
 import { OriginAuthorCall, deterministicAutomationAuthor } from '../../src/messaging/telegram-origin/OriginAutomationAuthor.js';
 import { createA2ACheckInScheduler } from '../../src/threadline/A2ACheckInScheduler.js';
 import { compileOriginWorker, temporaryState } from '../helpers/telegramOriginStore.js';
@@ -177,7 +177,7 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
         .set('Authorization', 'Bearer agent-test').set('X-Instar-Origin-Session', h.sessionToken)
         .send({ text: 'The requested delivery report is ready.' });
       expect(response.status).toBe(200);
-      expect(timeout).toHaveBeenCalledWith(15_000);
+      expect(timeout).toHaveBeenCalledWith(TELEGRAM_API_CALL_TIMEOUT_MS);
       expect(h.network).toHaveBeenCalledOnce();
       expect(h.network.mock.calls[0][1].signal).toBe(deadline.signal);
       expect((await h.runtime.store.listOrigins()).records[0].children[0].state).toBe('accepted');

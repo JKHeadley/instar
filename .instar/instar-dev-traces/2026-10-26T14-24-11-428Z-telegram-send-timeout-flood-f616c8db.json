@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "telegram-send-timeout-flood",
+  "sessionId": "d53c99b6-6cea-482d-b006-242b456f03ed",
+  "timestamp": "2026-10-26T14:24:11.428Z",
+  "artifactPath": "upgrades/side-effects/telegram-send-timeout-flood.md",
+  "artifactSha256": "32fb74905de3ebae9627b17e6b0e7aaa4f0af947b2cc97f669a78b9dc379c1ef",
+  "coveredFiles": [
+    "docs/specs/telegram-send-timeout-flood.eli16.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegram-egress.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/unit/telegram-api-edge.test.ts",
+    "tests/unit/telegram-origin/transport-deadlines.test.ts",
+    "upgrades/next/telegram-send-timeout-flood.md",
+    "upgrades/side-effects/telegram-send-timeout-flood.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A timeout constant (15s to 60s) and one log line on an existing branch; no new authority, no state or migration; a revert restores the old behaviour exactly.",
+  "eli16Path": "docs/specs/telegram-send-timeout-flood.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-send-timeout-flood.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -910,6 +910,7 @@ export class TelegramOriginService {
         await this.authorizeOriginDispatch(operation.record);
         this.authorizeSendPolicyDispatch(operation.record);
         let response: Response;
+        const networkStartedAt = Date.now();
         try { response = prepared ? await prepared.send() : await network(Object.freeze(request)); }
         catch (error) {
           const localRefusal = consumeOriginLocalRefusal(error, request);
@@ -943,9 +944,12 @@ export class TelegramOriginService {
               ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
             return this.#hold(operation, reason);
           }
-          // The reason stays the stable class name; the network error itself is
-          // written to the log so the cause of an unknown outcome is never invisible.
-          console.warn(`[telegram-origin] send outcome unknown for ${operation.record.operationId}: ${describeTransportFailure(error)}`);
+          // The reason stays the stable class name. The log line names the method, how long the
+          // network wait lasted and a bounded category of the network error, so the cause of an
+          // unknown outcome is never invisible (an hour of Telegram throttling on 2026-10-26 left
+          // server.log empty). It carries no error message text: only the category and, when it has
+          // the plain shape of one, the error code. An unknown outcome is still never resent here.
+          console.warn(`[telegram-origin] send outcome unknown for ${operation.record.operationId} (${request.method} after ${Date.now() - networkStartedAt}ms): ${describeTransportFailure(error)}`);
           await this.#outcomeUnknown(operation, claim.child, 'transport-acceptance-unknown');
           throw new TelegramOriginHoldError('transport-acceptance-unknown', operation.record.operationId, 'outcome-unknown');
         }
@@ -1068,13 +1072,30 @@ export class TelegramOriginService {
   }
 }
 
-/** One line naming a failed network call: its message and error code, never a credential. */
-function describeTransportFailure(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+/** Bounded categories for a network failure after the request left (the outcome-unknown branch). */
+export type TransportFailureCategory = 'timeout' | 'connection-reset' | 'dns' | 'tls' | 'other';
+const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_CONNECT_TIMEOUT', 'ESOCKETTIMEDOUT']);
+const RESET_CODES = new Set(['ECONNRESET', 'UND_ERR_SOCKET', 'EPIPE', 'ECONNABORTED', 'UND_ERR_CLOSED']);
+const DNS_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'EAI_NODATA', 'EAI_NONAME']);
+const TLS_CODE = /^(ERR_TLS_|ERR_SSL_|CERT_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_|ERR_OSSL_)/;
+const PLAIN_CODE = /^[A-Z][A-Z0-9_]{1,47}$/;
+
+/** Map a thrown network error to one bounded category. Reads only names and codes, never message text. */
+export function transportFailureCategory(error: unknown): TransportFailureCategory {
   const code = fetchFailureCode(error);
-  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : null;
-  return [message, code ? `code=${code}` : null, cause && cause !== message ? `cause=${cause}` : null]
-    .filter(Boolean).join(' ').replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<redacted>').slice(0, 300);
+  if (code && TIMEOUT_CODES.has(code)) return 'timeout';
+  if (error instanceof Error && error.name === 'TimeoutError') return 'timeout';
+  if (code && RESET_CODES.has(code)) return 'connection-reset';
+  if (code && DNS_CODES.has(code)) return 'dns';
+  if (code && TLS_CODE.test(code)) return 'tls';
+  return 'other';
+}
+
+/** The log fragment for an outcome-unknown send: category plus a code of plain shape, never free text. */
+export function describeTransportFailure(error: unknown): string {
+  const code = fetchFailureCode(error);
+  const category = transportFailureCategory(error);
+  return code && PLAIN_CODE.test(code) ? `${category} code=${code}` : category;
 }
 
 /**

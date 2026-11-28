@@ -27,7 +27,7 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
 import fs from 'node:fs';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
-import { telegramFetch } from './telegram-egress.js';
+import { telegramFetch, TELEGRAM_API_CALL_TIMEOUT_MS } from './telegram-egress.js';
 import { withOriginBotAuthoredText } from './telegram-origin/OriginBotEgress.js';
 import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKindFor, telegramMethodFor, type TelegramMediaKind } from './telegramMedia.js';
 import path from 'node:path';
@@ -8119,7 +8119,7 @@ export class TelegramAdapter implements MessagingAdapter {
     const safeUrl = `https://api.telegram.org/bot[REDACTED]/${method}`;
 
     // Long polling uses 30s timeout in params — give extra headroom
-    const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
+    const timeoutMs = method === 'getUpdates' ? 60_000 : TELEGRAM_API_CALL_TIMEOUT_MS;
     // Origin review/storage/capacity must finish before this request's clock starts.
     const response = await withOriginBotAuthoredText(this.config.token, params.text, () => telegramFetch(url, {
       method: 'POST',

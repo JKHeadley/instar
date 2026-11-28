@@ -77,6 +77,20 @@ const telegramDispatcher = new Agent({ connect: { autoSelectFamily: true, autoSe
  * dispatcher it models produces requests Telegram honours and this file never sees.
  */
 const BOT_API_HOST = 'api.telegram.org';
+
+/**
+ * Network timeout for a non-polling Bot API call, measured from when the request leaves.
+ *
+ * It was 15 s. On 2026-10-26 Echo's bot was throttled by Telegram for about an hour: Telegram held
+ * every chat-scoped request for 14 to 33 s before answering, with either the result (200) or
+ * `429 retry_after`. A 15 s clock fired first on nearly every send, so instead of a 429 that the
+ * origin outbox schedules a retry for, or a delivered message with its receipt, each send became a
+ * non-retryable `transport-acceptance-unknown` hold — and some of those messages were in fact
+ * delivered. The wait must outlast Telegram's own delayed answer; 60 s does with margin. One send
+ * plus the two outbound reviews (2 x OUTBOUND_GATE_REVIEW_BUDGET_MS) still fits inside the server's
+ * 120 s reply-route budget (OUTBOUND_MESSAGING_TIMEOUT_MS); transport-deadlines.test.ts asserts it.
+ */
+export const TELEGRAM_API_CALL_TIMEOUT_MS = 60_000;
 /**
  * STATED OPEN — a self-hosted Bot API server is invisible to this door.
  *

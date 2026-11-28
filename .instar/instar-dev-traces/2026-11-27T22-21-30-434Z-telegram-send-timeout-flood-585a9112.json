@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "telegram-send-timeout-flood",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-27T22:21:30.434Z",
+  "artifactPath": "upgrades/side-effects/telegram-send-timeout-flood.md",
+  "artifactSha256": "66163f949d03c961a74d4a7520728ed47c473bba601ebd00b154a26f64ec7900",
+  "coveredFiles": [
+    "docs/specs/telegram-send-timeout-flood.eli16.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegram-egress.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/integration/telegram-origin-routes.test.ts",
+    "tests/unit/telegram-api-edge.test.ts",
+    "tests/unit/telegram-origin/transport-deadlines.test.ts",
+    "upgrades/next/telegram-send-timeout-flood.md",
+    "upgrades/side-effects/telegram-send-timeout-flood.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A shared 60 s timeout constant for non-polling Bot API calls and one log line that now writes a bounded error category instead of error text; no new authority, state or migration, and a revert restores the old behaviour exactly.",
+  "eli16Path": "docs/specs/telegram-send-timeout-flood.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-send-timeout-flood.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
