@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "standards-direction-merge-parent-base",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T04:33:03.779Z",
+  "artifactPath": "upgrades/side-effects/standards-direction-merge-parent-base.md",
+  "artifactSha256": "443b5da5e57d3d5efab897805f465be58d9cdb77b78ba3c38415ff8f8e5269f6",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "docs/specs/standards-direction-merge-parent-base.eli16.md",
+    "docs/specs/standards-direction-merge-parent-base.md",
+    "scripts/standards-coverage.mjs",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "tests/unit/standards-direction-base-merge-parent.test.ts",
+    "upgrades/next/standards-direction-merge-parent-base.md",
+    "upgrades/side-effects/standards-direction-merge-parent-base.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release-note marker fix on the direction-guard change (Tier 1 by the Chief of Staff's ruling 2026-11-27 19:26); a revert undoes it; covers every file this branch changes, reader concurred on the delta",
+  "eli16Path": "docs/specs/standards-direction-merge-parent-base.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/standards-direction-merge-parent-base.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

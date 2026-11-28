@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-28T02:24:36.710Z",
+  "slug": "threadline-read-classification",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/effect-kinds.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

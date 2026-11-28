@@ -37,6 +37,14 @@ export interface EffectEntry {
 export const INSTAR_GITHUB_REPOSITORY = 'jkheadley/instar';
 
 export const EFFECT_ENTRIES: readonly EffectEntry[] = [
+  {
+    service: 'threadline',
+    actions: [
+      'threadline_discover', 'threadline_agents', 'threadline_history',
+      'threadline_registry_search', 'threadline_registry_status', 'threadline_registry_get',
+    ],
+    operation: 'read',
+  },
   { service: 'codex_apps', actions: ['github_create_pull_request'], operation: 'write', githubRepository: INSTAR_GITHUB_REPOSITORY },
   { service: 'codex_apps', actions: ['github_update_pull_request'], operation: 'modify', githubRepository: INSTAR_GITHUB_REPOSITORY },
   {
