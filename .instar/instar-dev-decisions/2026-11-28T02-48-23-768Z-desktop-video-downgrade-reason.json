@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-28T02:48:23.768Z",
+  "slug": "desktop-video-downgrade-reason",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/DirectDesktopAccess.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Three different downgrade paths showed one status line and the server recorded none (Studio reading, 2026-11-27 15:23 PT)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "records one reason string per request (??=); adds no action, loop or retry"
+  },
+  "verdict": "pass"
+}

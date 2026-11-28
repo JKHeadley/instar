@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "desktop-video-downgrade-reason",
+  "sessionId": "dcbdf3b8-b0ce-4950-9a7c-d8e435210733",
+  "timestamp": "2026-11-28T05:04:35.874Z",
+  "artifactPath": "upgrades/side-effects/desktop-video-downgrade-reason.md",
+  "artifactSha256": "234d9b6bc5875c8d1e0b56a8e03f62649df0b638bf799800e3c0d1550b27a872",
+  "coveredFiles": [
+    "src/core/DirectDesktopAccess.ts",
+    "tests/unit/DirectDesktopAccess.test.ts",
+    "docs/specs/desktop-video-downgrade-reason.eli16.md",
+    "upgrades/next/desktop-video-downgrade-reason.md",
+    "upgrades/side-effects/desktop-video-downgrade-reason.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Diagnostic only: the first reason a Remote Desktop session left H.264 is kept on the request row and returned in the existing status read as fixed words. No video behaviour, route, config or helper change.",
+  "eli16Path": "docs/specs/desktop-video-downgrade-reason.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-video-downgrade-reason.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Three different downgrade paths showed one status line and the server recorded none (Studio reading, 2026-11-27 15:23 PT)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "records one reason string per request (??=); adds no action, loop or retry"
+  }
+}
