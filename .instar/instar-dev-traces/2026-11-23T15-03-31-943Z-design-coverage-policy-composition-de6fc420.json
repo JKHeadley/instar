@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "design-coverage-policy-composition",
+  "sessionId": "081d8824-59d3-4d61-bb9b-a2a100a5f881",
+  "timestamp": "2026-11-23T15:03:31.943Z",
+  "artifactPath": "upgrades/side-effects/design-coverage-policy-composition.md",
+  "artifactSha256": "b1f49d077e79e65eade89defa35925d7df72f2b961e645f7b980d81d9fd0baff",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "src/designGate/coveragePolicyInspection.ts",
+    "tests/unit/design-coverage-policy-inspection.test.ts",
+    "upgrades/next/design-coverage-policy-composition.md",
+    "upgrades/side-effects/design-coverage-policy-composition.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Pure next-step composition under approved section5; preserves BASE/trusted-input boundaries and has no merge authority or I/O.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
