@@ -223,6 +223,7 @@ function findMentions(capability, docs) {
       // otherwise never matched — every `dev:*` command read as undocumented).
       const kebab = capability.name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
       needles = [`instar ${capability.name}`, `instar ${kebab}`];
+      if (capability.name === 'dashboardOpen') needles.push('instar dashboard open');
       normalize = (s) => s.replace(/:/g, '-');
       break;
     }

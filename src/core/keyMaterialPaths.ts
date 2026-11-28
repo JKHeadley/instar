@@ -105,6 +105,9 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // temp names (`local-mcp-secret.<pid>.<rand>.tmp`) too.
   // docs/specs/threadline-mcp-local-http.md D2
   'state/local-mcp-secret',
+  // The one-time local dashboard link: listener key, ticket store and launch documents
+  // (docs/specs/identity-security-piece1a-local-link.md §7).
+  'local-access/',
   // The same-network listener's TLS private key (identity A4, 0600): the key a phone at home pins.
   // Covers the writer's temp names too. docs/specs/identity-security-piece3e-same-network-first-phone.md
   'state/same-network-tls.key',
@@ -144,6 +147,7 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'telemetry/local-secret',
   'state/lifeline-ingress-secret',
   'state/local-mcp-secret',
+  'local-access/listener.key',
   'state/same-network-tls.key',
   'state/ceremony-credential.json',
   'state/always-available-token.json',
@@ -157,7 +161,7 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
  * The hard-link check (§5.2) lists these at request time — only on the rare
  * `nlink > 1` path — so a hard link to a generation-named key is caught too.
  */
-export const KEY_MATERIAL_DYNAMIC_DIRS: readonly string[] = Object.freeze(['machine-ssh/']);
+export const KEY_MATERIAL_DYNAMIC_DIRS: readonly string[] = Object.freeze(['machine-ssh/', 'local-access/launch/']);
 export const KEY_MATERIAL_ROOT_NAME_PREFIXES: readonly string[] = Object.freeze(['origin-sessions-']);
 
 /** The project-relative spelling the file routes match (`.instar/<prefix>`). */

@@ -98,6 +98,15 @@ describe('docs-coverage script', () => {
     expect(bazItem.coverage).toBe('UNDOCUMENTED');
   });
 
+  it('recognizes the dashboard open subcommand in documentation', () => {
+    fs.writeFileSync(path.join(repo, 'src/commands/dashboardOpen.ts'), '// dashboard open');
+    fs.appendFileSync(path.join(repo, 'README.md'), '\nRun instar dashboard open.');
+    const command = runScript(repo).jsonReport.byType.command.items.find(
+      (item: { name: string }) => item.name === 'dashboardOpen',
+    );
+    expect(command.coverage).toBe('PARTIAL');
+  });
+
   it('--check passes when all category coverages meet the (loose) floors set via env', () => {
     const env = { ...process.env, INSTAR_DOCS_COVERAGE_MIN: '0', INSTAR_DOCS_COVERAGE_ROUTE_MIN: '0', INSTAR_DOCS_COVERAGE_COMMAND_MIN: '0', INSTAR_DOCS_COVERAGE_JOB_MIN: '0', INSTAR_DOCS_COVERAGE_HOOK_MIN: '0', INSTAR_DOCS_COVERAGE_SKILL_MIN: '0', INSTAR_DOCS_COVERAGE_CLASS_MIN: '0' };
     const r = spawnSync('node', [SCRIPT, '--check'], { cwd: repo, encoding: 'utf-8', env });

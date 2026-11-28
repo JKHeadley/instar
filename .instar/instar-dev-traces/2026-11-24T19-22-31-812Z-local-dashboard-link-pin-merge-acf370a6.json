@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "local-dashboard-link-pin-merge",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-24T19:22:31.812Z",
+  "artifactPath": "upgrades/side-effects/local-dashboard-link-pin-merge.md",
+  "artifactSha256": "f7a05d4e0653b4457c699245796125c9f5608ea0a0d6bfc398ac668ef03db0f4",
+  "specPath": "docs/specs/identity-security-piece1a-local-link.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "tests/integration/local-access-link.test.ts",
+    "upgrades/side-effects/local-dashboard-link-pin-merge.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Preserve the approved local access guidance while integrating two security-sensitive PIN paths.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
