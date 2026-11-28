@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-28T05:27:18.766Z",
+  "slug": "desktop-h264-no-reorder",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 94,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "dashboard/desktop.js"
+    ],
+    "addedLines": 93,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The Mac and Windows encoders write a Baseline SPS with no VUI; Chrome assumes reordering up to MaxDpbFrames (Studio reading 2026-11-27 21:13 PT: 10 decodes, 0 outputs)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a pure byte rewrite per keyframe; adds no action, loop or retry"
+  },
+  "verdict": "blocked"
+}

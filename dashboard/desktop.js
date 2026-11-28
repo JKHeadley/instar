@@ -342,6 +342,97 @@ function nalTypes(bytes) {
   }
   return types;
 }
+// The Mac encoder writes a Baseline SPS with picture order count type 0 and no VUI. Nothing
+// in it says frames are never reordered, so a decoder may hold its whole frame buffer before
+// the first picture: Chrome on a Mac holds 12 frames at 608x1080, longer than the 2.5 s
+// start-up wait, and the session fell to JPEG. The encoder never reorders frames
+// (AllowFrameReordering is off), so the viewer adds that statement to the SPS before decoding.
+// Only the exact shape the encoder writes is changed: Baseline profile 66, picture order
+// count type 0 or 2, and no VUI. Anything else passes through untouched.
+function spsWithNoReorder(nal) {
+  if (nal.length < 4 || nal.length > 64 || (nal[0] & 31) !== 7) return nal;
+  const rbsp = [];
+  for (let i = 1, zeros = 0; i < nal.length; i++) {
+    if (zeros >= 2 && nal[i] === 3) { zeros = 0; continue; }
+    rbsp.push(nal[i]);
+    zeros = nal[i] === 0 ? zeros + 1 : 0;
+  }
+  let pos = 0;
+  const total = rbsp.length * 8;
+  const bit = () => {
+    if (pos >= total) throw new Error('short');
+    const value = (rbsp[pos >> 3] >> (7 - (pos & 7))) & 1;
+    pos++;
+    return value;
+  };
+  const bits = count => { let value = 0; for (let i = 0; i < count; i++) value = value * 2 + bit(); return value; };
+  const ue = () => {
+    let zeros = 0;
+    while (bit() === 0) { if (++zeros > 31) throw new Error('long'); }
+    return 2 ** zeros - 1 + bits(zeros);
+  };
+  try {
+    const profile = bits(8);
+    if (profile !== 66) return nal; // Baseline: no B-frames, so no reordering
+    bits(16); // constraint flags, level
+    ue(); // seq_parameter_set_id
+    ue(); // log2_max_frame_num_minus4
+    const pocType = ue();
+    if (pocType === 0) ue();
+    else if (pocType !== 2) return nal;
+    const maxRefFrames = ue();
+    bit(); ue(); ue(); // gaps allowed, width and height in macroblocks
+    if (!bit()) bit(); // frame_mbs_only, else mb_adaptive_frame_field
+    bit(); // direct_8x8_inference
+    if (bit()) { ue(); ue(); ue(); ue(); } // cropping
+    const vuiAt = pos;
+    if (bit()) return nal; // a VUI is already there: leave it alone
+    const out = [];
+    for (let i = 0; i < vuiAt; i++) out.push((rbsp[i >> 3] >> (7 - (i & 7))) & 1);
+    const putUe = value => {
+      const code = (value + 1).toString(2);
+      for (let i = 1; i < code.length; i++) out.push(0);
+      for (const c of code) out.push(c === '1' ? 1 : 0);
+    };
+    out.push(1); // vui_parameters_present_flag
+    out.push(0, 0, 0, 0, 0, 0, 0, 0); // aspect, overscan, signal, chroma loc, timing, nal hrd, vcl hrd, pic struct
+    out.push(1, 1); // bitstream_restriction_flag, motion_vectors_over_pic_boundaries_flag
+    putUe(2); putUe(1); putUe(16); putUe(16); // the spec's defaults for the size limits
+    putUe(0); // max_num_reorder_frames
+    putUe(Math.max(1, maxRefFrames)); // max_dec_frame_buffering
+    out.push(1); // rbsp_stop_one_bit
+    while (out.length % 8) out.push(0);
+    const result = [nal[0]];
+    for (let i = 0, zeros = 0; i < out.length; i += 8) {
+      let byte = 0;
+      for (let j = 0; j < 8; j++) byte = byte * 2 + out[i + j];
+      if (zeros >= 2 && byte <= 3) { result.push(3); zeros = 0; }
+      result.push(byte);
+      zeros = byte === 0 ? zeros + 1 : 0;
+    }
+    return Uint8Array.from(result);
+  } catch { return nal; }
+}
+function withNoReorderSps(data) {
+  const starts = [];
+  for (let i = 0; i + 4 < data.length; i++) {
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1) { starts.push(i); i += 3; }
+  }
+  for (let n = 0; n < starts.length; n++) {
+    const from = starts[n] + 4;
+    if ((data[from] & 31) !== 7) continue;
+    const to = n + 1 < starts.length ? starts[n + 1] : data.length;
+    const nal = data.subarray(from, to);
+    const fixed = spsWithNoReorder(nal);
+    if (fixed === nal) return data;
+    const result = new Uint8Array(data.length - nal.length + fixed.length);
+    result.set(data.subarray(0, from));
+    result.set(fixed, from);
+    result.set(data.subarray(to), from + fixed.length);
+    return result;
+  }
+  return data;
+}
 function receiveH264(bytes, epoch) {
   if (activeVideoCodec !== 'h264' || bytes.length < 23 || bytes.length > 1_250_018
     || String.fromCharCode(...bytes.subarray(0, 4)) !== 'IDV1' || bytes[4] !== 1
@@ -352,7 +443,7 @@ function receiveH264(bytes, epoch) {
   if (width < 2 || width > 1920 || width % 2 || height < 2 || height > 1080 || height % 2) {
     throw new Error('H.264 geometry invalid.');
   }
-  const data = bytes.subarray(18);
+  let data = bytes.subarray(18);
   if (data[0] !== 0 || data[1] !== 0 || data[2] !== 0 || data[3] !== 1) {
     throw new Error('H.264 Annex B invalid.');
   }
@@ -361,6 +452,7 @@ function receiveH264(bytes, epoch) {
   if (keyframe ? !(types.has(7) && types.has(8) && types.has(5)) : !types.has(1)) {
     throw new Error('H.264 access unit invalid.');
   }
+  if (keyframe) data = withNoReorderSps(data);
   if (decoder && (decoderWidth !== width || decoderHeight !== height)) resetVideoDecoder();
   if (needsVideoKeyframe && !keyframe) { requestVideoKeyframe(); return; }
   if (!decoder) {
