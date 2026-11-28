@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-secure-disposable-launch",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T16:40:50.583Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-secure-disposable-launch.md",
+  "artifactSha256": "ac79cfb348034c116e7fb57ca86fe58a2f7a2d663303158b2879458690779c7d",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/disposableLauncher.ts",
+    "tests/integration/hosted-relay-disposable.test.ts",
+    "upgrades/next/hosted-relay-secure-disposable-launch.md",
+    "upgrades/side-effects/hosted-relay-secure-disposable-launch.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Opt-in loopback launcher couples verified outbound transport and lease-controlled opaque ingress.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "src/hostedRelay/disposableLauncher.ts#launchDisposableHostedRelay",
+      "howCaught": "Only an explicitly started loopback instance owns a sweep, and shutdown cancels it."
+    }
+  }
+}

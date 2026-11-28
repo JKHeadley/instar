@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-25T16:41:16.727Z",
+  "slug": "hosted-relay-secure-disposable-launch",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/disposableLauncher.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 76,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/disposableLauncher.ts"
+    ],
+    "addedLines": 76,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "src/hostedRelay/disposableLauncher.ts#launchDisposableHostedRelay",
+      "howCaught": "Only an explicitly started loopback instance owns a sweep, and shutdown cancels it."
+    }
+  },
+  "verdict": "pass"
+}

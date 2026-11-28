@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-rendezvous-surface",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T16:51:11.213Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-rendezvous-surface.md",
+  "artifactSha256": "09f60d58169f9bce9264e5cd70035544533ad880071b881c31ef5b914e7fd5f9",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/disposableRelay.ts",
+    "src/hostedRelay/rendezvous.ts",
+    "src/hostedRelay/streamCustody.ts",
+    "tests/integration/hosted-relay-disposable.test.ts",
+    "tests/unit/hosted-relay-rendezvous.test.ts",
+    "upgrades/next/hosted-relay-rendezvous-surface.md",
+    "upgrades/side-effects/hosted-relay-rendezvous-surface.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant rendezvous requests enforce exact tunnel admission and transport-observed redemption limits.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each caller-initiated request owns one bounded deadline."
+  }
+}

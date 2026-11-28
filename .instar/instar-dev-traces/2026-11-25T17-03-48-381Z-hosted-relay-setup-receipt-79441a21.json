@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-setup-receipt",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T17:03:48.381Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-setup-receipt.md",
+  "artifactSha256": "e4f0304078751a496d7be28a0289dc3ba0ab45d1e4059ed4c1c764b835095fcf",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/setupReceipt.ts",
+    "tests/integration/hosted-relay-disposable.test.ts",
+    "tests/integration/hosted-relay-setup-receipt.test.ts",
+    "upgrades/next/hosted-relay-setup-receipt.md",
+    "upgrades/side-effects/hosted-relay-setup-receipt.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant client receipt bounds and constrains a relay locator without conveying identity authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One caller-requested redemption owns one bounded verified connection."
+  }
+}

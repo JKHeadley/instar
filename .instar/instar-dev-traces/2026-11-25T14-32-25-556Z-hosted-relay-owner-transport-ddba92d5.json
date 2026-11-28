@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-owner-transport",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T14:32:25.556Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-owner-transport.md",
+  "artifactSha256": "70b01c8a57ae013a2e5c38a2db9f0080612aa3f9042faee20224bc60ea8a9391",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/outboundTransport.ts",
+    "src/hostedRelay/ownerLeaseReader.ts",
+    "tests/integration/hosted-relay-outbound.test.ts",
+    "tests/unit/hosted-relay-owner-lease-reader.test.ts",
+    "upgrades/next/hosted-relay-owner-transport.md",
+    "upgrades/side-effects/hosted-relay-owner-transport.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant owner-record authority reader and session-bound reverse multiplexing protect exact relay custody.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Dormant primitives open no listeners or outbound sessions."
+  }
+}
