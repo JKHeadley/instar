@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "standards-direction-merge-parent-base",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T03:36:15.814Z",
+  "artifactPath": "upgrades/side-effects/standards-direction-merge-parent-base.md",
+  "artifactSha256": "00a9699fab3baf805156ac65db7b8dbab4137dec28ddc2849897e3bbaf02dd76",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "docs/specs/standards-direction-merge-parent-base.eli16.md",
+    "docs/specs/standards-direction-merge-parent-base.md",
+    "scripts/standards-coverage.mjs",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "tests/unit/standards-direction-base-merge-parent.test.ts",
+    "upgrades/next/standards-direction-merge-parent-base.md",
+    "upgrades/side-effects/standards-direction-merge-parent-base.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix to the direction guard's protected-base choice in CI plus the script's pin, with its design note; a revert fully undoes it; the commit classifier rates it Tier 1 (riskFloor 1); Tier 1 by the Chief of Staff's ruling 2026-11-27 19:26, with Tier-2-level rigor done (adversarial independent reader, two rounds, no bypass)",
+  "eli16Path": "docs/specs/standards-direction-merge-parent-base.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/standards-direction-merge-parent-base.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
