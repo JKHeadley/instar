@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "pre-push-smoke-bounded-discovery",
+  "sessionId": "a4c875e9-a7d4-4699-b764-d80aa9165b4a",
+  "timestamp": "2026-11-28T07:47:41.193Z",
+  "artifactPath": "upgrades/side-effects/pre-push-smoke-bounded-discovery.md",
+  "artifactSha256": "8bfb2d6414a208c0423674d04971911a220c9a835fc53e0ac1b2878ae3714079",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-28T06-53-15-881Z-pre-push-smoke-bounded-discovery.json",
+    ".instar/instar-dev-traces/2026-11-28T06-52-32-379Z-pre-push-smoke-bounded-discovery-531f889d.json",
+    "docs/specs/pre-push-smoke-bounded-discovery.eli16.md",
+    "scripts/lib/pre-push-scope.mjs",
+    "scripts/pre-push-smoke.mjs",
+    "tests/unit/scripts/pre-push-scope.test.ts",
+    "upgrades/next/pre-push-smoke-bounded-discovery.md",
+    "upgrades/side-effects/pre-push-smoke-bounded-discovery.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Local smoke selection spends less time on broad changes. Required verification and merge authority stay the same.",
+  "eli16Path": "docs/specs/pre-push-smoke-bounded-discovery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pre-push-smoke-bounded-discovery.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

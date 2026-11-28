@@ -8,10 +8,12 @@
 import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { scrubSecrets } from './scrubSecrets.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 
 export type CorrectionOrigin = 'operator-attributed' | 'agent-self';
 export type ClassReviewFillState = 'pending' | 'filled' | 'dead-lettered';
@@ -128,6 +130,47 @@ CREATE INDEX IF NOT EXISTS idx_class_reviews_semantic ON class_reviews(semantic_
 `;
 
 const TRUE_TERMINALS = new Set<OutcomeLifecycle>(['ratified', 'shipped', 'rejected', 'no-action']);
+/** The ladder id the review's evidence is filed under (src/data/feature-ladders.json). */
+export const CLASS_REVIEW_FEATURE_ID = 'monitoring.correctionClassReview';
+/**
+ * Who set an outcome that grades a proposal: only the operator's PIN-gated choice.
+ * Never the reviewer, and never an action completion (the agent's own session can
+ * complete actions without a PIN, so that is not an independent decision).
+ */
+export type ClassReviewGrader = 'operator-outcome';
+/** Did the review PROPOSE work on this arm when it filled (its own call, the thing graded)? */
+export function armWasProposed(record: Pick<ClassReviewRecord, 'standardReview' | 'processReview'>, arm: 'standard' | 'process'): boolean {
+  return arm === 'standard'
+    ? ['needs-upgrade', 'new-standard-needed'].includes(String(record.standardReview?.verdict))
+    : record.processReview?.verdict === 'process-gap';
+}
+/**
+ * The grade's identity: one per proposal (review and arm). A fixed-length digest of
+ * the whole key, so the evidence log's 64-character field never cuts it and two
+ * proposals can never share an id.
+ */
+export function proposalGradeId(dedupeKey: string, arm: 'standard' | 'process'): string {
+  return `class-review:${createHash('sha256').update(`${dedupeKey}\u0000${arm}`).digest('hex').slice(0, 40)}`;
+}
+/**
+ * A proposal's grade from the operator's decision on it (the caller passes a grader
+ * only from the PIN-gated route). Deferral and expiry decide nothing, so they grade
+ * nothing. Every other operator decision grades, whatever the prior outcome (a
+ * repeat included), so an agent shipping its own action first cannot
+ * keep the operator's rejection out of the count. The latest decision stands (the
+ * ladder keeps the last row per gradesEventId).
+ * The grade is acceptance, a proxy for correctness: see the spec's limits.
+ */
+export function gradeForOutcome(next: OutcomeLifecycle): 'right' | 'wrong' | null {
+  // Every operator decision grades, a repeat included: the agent may have set the
+  // same outcome first (shipping its own action), and the ladder keeps one row per
+  // proposal (the latest), so a repeated grade never counts twice.
+  // Whatever came before (proposed, put off, or shipped by the agent's own action
+  // completion), the operator's decision grades the proposal; the latest stands.
+  if (next === 'ratified' || next === 'shipped') return 'right';
+  if (next === 'rejected') return 'wrong';
+  return null;
+}
 
 export class ClassReviewStore {
   private readonly db: BetterSqliteDatabase;
@@ -327,7 +370,11 @@ export class ClassReviewStore {
       .slice(0, Math.max(1, Math.min(limit, 5)));
   }
 
-  transitionOutcome(dedupeKey: string, arm: 'standard' | 'process', outcome: OutcomeLifecycle): ClassReviewRecord | null {
+  /**
+   * `gradedBy` is required: the PIN-gated outcome route passes 'operator-outcome'
+   * after its PIN check; every other caller passes null and grades nothing.
+   */
+  transitionOutcome(dedupeKey: string, arm: 'standard' | 'process', outcome: OutcomeLifecycle, gradedBy: ClassReviewGrader | null): ClassReviewRecord | null {
     const current = this.getLocal(dedupeKey);
     if (!current || current.fillState !== 'filled') return current;
     const standardOutcome = arm === 'standard' ? outcome : current.standardOutcome;
@@ -339,7 +386,24 @@ export class ClassReviewStore {
     this.db.prepare(`UPDATE class_reviews SET standard_outcome=?, process_outcome=?, review_lifecycle=?, updated_at=?, version=version+1 WHERE dedupe_key=?`)
       .run(standardOutcome, processOutcome, reviewLifecycle, now, dedupeKey);
     const updated = this.getLocal(dedupeKey);
-    if (updated) this.emit(updated);
+    if (updated) {
+      // Graded evidence for the review's ladder, written only after the update
+      // landed. One grade per proposal: the ladder dedupes on gradesEventId.
+      const grade = gradedBy && armWasProposed(updated, arm) ? gradeForOutcome(outcome) : null;
+      // A later decision on a reopened proposal writes another row under the same
+      // id; the ladder keeps the latest row per id, so the latest decision stands.
+      if (grade) {
+        featureEvidence.record(CLASS_REVIEW_FEATURE_ID, {
+          kind: 'outcome', outcome: grade, gradedBy: gradedBy!,
+          gradesEventId: proposalGradeId(dedupeKey, arm),
+          reason: `${arm} proposal ${outcome}`,
+          subject: updated.semanticClassId,
+          context: { arm, outcome, dedupeKey },
+        });
+      }
+      // After the evidence row, so a throwing listener cannot drop the grade.
+      this.emit(updated);
+    }
     return updated;
   }
 
@@ -368,7 +432,7 @@ export class ClassReviewStore {
   defer(dedupeKey: string, arm: 'standard' | 'process', trackingId: string): ClassReviewRecord | null {
     const safe = scrubSecrets(trackingId).trim().slice(0, 256);
     if (!safe) return this.getLocal(dedupeKey);
-    const updated = this.transitionOutcome(dedupeKey, arm, 'deferred');
+    const updated = this.transitionOutcome(dedupeKey, arm, 'deferred', null);
     if (!updated) return null;
     this.db.prepare(`UPDATE class_reviews SET deferred_tracking_id=?, updated_at=?, version=version+1 WHERE dedupe_key=?`)
       .run(safe, new Date().toISOString(), dedupeKey);

@@ -25,6 +25,18 @@ export type FeatureEvidenceKind = 'fired' | 'held' | 'error' | 'outcome';
 export type FeatureEvidenceOutcome = 'right' | 'wrong' | 'unknown';
 export type FeatureEvidenceContext = Record<string, string | number | boolean | null>;
 
+/**
+ * Grader names only in-process code may write: an operator's decision, recorded by
+ * the code path that checked it (the PIN-gated class review outcome route, the
+ * skill-learning confirm). The open evidence route refuses them, so a caller holding
+ * the agent's token cannot write a grade in the operator's name.
+ */
+export function isReservedGrader(gradedBy: unknown): boolean {
+  if (typeof gradedBy !== 'string') return false;
+  const g = gradedBy.trim().toLowerCase();
+  return g === 'operator' || g.startsWith('operator-');
+}
+
 export interface FeatureEvidenceInput {
   kind: FeatureEvidenceKind;
   reason: string;

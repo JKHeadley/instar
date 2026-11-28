@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "iphone-presence-app-build",
+  "sessionId": "fb2281d6-3813-4f13-b8a3-619580e41ffe",
+  "timestamp": "2026-11-26T03:42:21.775Z",
+  "artifactPath": "upgrades/side-effects/iphone-presence-app-build.md",
+  "artifactSha256": "4f62a8d6d89bbead5c6f887d19b9406bfb2d934fc71bd5861a23daff247ec105",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-26T03-41-44-814Z-iphone-presence-app-build.json",
+    "docs/specs/mobile-push.eli16.md",
+    "docs/specs/mobile-push.md",
+    "src/core/MobileDeviceKeys.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/needsRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/mobile-pairing-alive.test.ts",
+    "tests/integration/mobile-push-routes.test.ts",
+    "tests/unit/mobile-push.test.ts",
+    "upgrades/next/iphone-presence-app-build.md",
+    "upgrades/side-effects/iphone-presence-app-build.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive build observation on existing signed registration and owner reads",
+  "eli16Path": "docs/specs/mobile-push.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/iphone-presence-app-build.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
