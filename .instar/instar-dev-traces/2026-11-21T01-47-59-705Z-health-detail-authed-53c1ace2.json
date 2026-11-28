@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "health-detail-authed",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T01:47:59.705Z",
+  "artifactPath": "upgrades/side-effects/health-detail-authed.md",
+  "artifactSha256": "e849cb32215c2f2c9842d0cecc13284a6efdc8523a3c3963397a27cd2caa0ccd",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T01-47-50-788Z-health-detail-authed.json",
+    ".instar/instar-dev-traces/2026-11-21T01-47-26-759Z-health-detail-authed-e95d4c1f.json",
+    "docs/specs/health-detail-authed.eli16.md",
+    "src/server/routes.ts",
+    "tests/e2e/health-detail-authed-alive.test.ts",
+    "tests/unit/health-auth-gating.test.ts",
+    "tests/unit/health-llm-reliability-authed.test.ts",
+    "upgrades/next/health-detail-authed.md",
+    "upgrades/side-effects/health-detail-authed.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-130 read-side disclosure fix; whole-PR trace.",
+  "eli16Path": "docs/specs/health-detail-authed.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/health-detail-authed.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

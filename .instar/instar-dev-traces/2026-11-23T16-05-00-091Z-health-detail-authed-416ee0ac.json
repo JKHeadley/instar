@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "health-detail-authed",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T16:05:00.091Z",
+  "artifactPath": "upgrades/side-effects/health-detail-authed.md",
+  "artifactSha256": "cab9de406ea8bcbf2f38e59c1e33c0f45bd3374b76f38a5bb286836a8c8335b4",
+  "coveredFiles": [
+    "docs/specs/health-detail-authed.eli16.md",
+    "src/server/routes.ts",
+    "tests/e2e/health-detail-authed-alive.test.ts",
+    "tests/unit/health-auth-gating.test.ts",
+    "tests/unit/health-llm-reliability-authed.test.ts",
+    "upgrades/next/health-detail-authed.md",
+    "upgrades/side-effects/health-detail-authed.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-130 read-side disclosure fix; whole-PR trace after merging main, with the e2e test's session-manager stand-in completed.",
+  "eli16Path": "docs/specs/health-detail-authed.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/health-detail-authed.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}
