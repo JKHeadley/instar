@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "gate-error-class",
+  "sessionId": "fc3d3191-842f-463d-af54-a2abbc40e3f2",
+  "timestamp": "2026-11-26T07:57:10.449Z",
+  "artifactPath": "upgrades/side-effects/gate-error-class.md",
+  "artifactSha256": "90edabd0f0e521affc999c9a4b8e282c10c9855bcf4527fe3dac601f23f0243e",
+  "coveredFiles": [
+    "docs/specs/gate-error-class.eli16.md",
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/side-effects/gate-error-class.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Manifest classification of the new LLM-plumbing helper, same reason as its neighbours; no certified file or evidence binding changes; revert-safe.",
+  "eli16Path": "docs/specs/gate-error-class.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/gate-error-class.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

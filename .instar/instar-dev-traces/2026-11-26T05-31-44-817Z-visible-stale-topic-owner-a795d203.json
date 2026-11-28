@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "visible-stale-topic-owner",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T05:31:44.817Z",
+  "artifactPath": "upgrades/side-effects/visible-stale-topic-owner.md",
+  "artifactSha256": "a5acc6deedc5eb6dfadaf83aaf03ddc1c4181f7b97b9529b90a3c75e5372fe4d",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-26T05-30-54-864Z-visible-stale-topic-owner.json",
+    "src/commands/server.ts",
+    "src/core/QueueDrainLoop.ts",
+    "src/core/SessionRouter.ts",
+    "tests/unit/SessionRouter.test.ts",
+    "tests/unit/session-router-spawn-ack-wiring.test.ts",
+    "upgrades/eli16/visible-stale-topic-owner.md",
+    "upgrades/next/visible-stale-topic-owner.md",
+    "upgrades/side-effects/visible-stale-topic-owner.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible dashboard-only visibility for existing queue hold with unchanged routing and ownership",
+  "eli16Path": "upgrades/eli16/visible-stale-topic-owner.md",
+  "sideEffectsPath": "upgrades/side-effects/visible-stale-topic-owner.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One record-only observation per ownership epoch after a user message. No notification, scheduling, new retries, or feedback loop."
+  }
+}

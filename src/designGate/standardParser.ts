@@ -34,8 +34,16 @@ export function parseDesignStandard(markdown: string): ParsedDesignStandard {
   for (const [offset, text] of lines.entries()) {
     if (/^## /.test(text)) inIndex = text.trim() === '## Machine-checkable rules at a glance';
     if (!inIndex) continue;
-    const row = text.match(new RegExp(`^\\|\\s*\u0060?(${ID})\u0060?\\s*\\|\\s*(.*?)\\s*\\|$`));
-    if (!row) continue;
+    // Linear: match the cells once and trim afterwards. Overlapping whitespace
+    // groups made the old single pattern cubic on a long malformed row.
+    const cells = /^\|(.*)\|$/.exec(text);
+    if (!cells) continue;
+    const bar = cells[1].indexOf('|');
+    if (bar < 0) continue;
+    const idCell = cells[1].slice(0, bar).trim().replace(/^\u0060|\u0060$/g, '');
+    const idMatch = new RegExp(`^(${ID})$`).exec(idCell);
+    if (!idMatch) continue;
+    const row = [text, idMatch[1], cells[1].slice(bar + 1).trim()];
     if (index.has(row[1])) errors.push({ code: 'duplicate-machine-index', line: offset + 1, ruleId: row[1], detail: 'A machine rule is indexed more than once.' });
     else index.set(row[1], { text: row[2], line: offset + 1 });
   }

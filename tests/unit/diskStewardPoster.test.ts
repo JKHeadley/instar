@@ -1,6 +1,6 @@
 /** Disk Steward post text and envelopes (spec docs/specs/disk-steward.md §3.5). */
 import { describe, it, expect } from 'vitest';
-import { renderPost, cleanName, makeDiskStewardSender } from '../../src/monitoring/DiskStewardPoster.js';
+import { renderPost, cleanName, makeDiskStewardSender, OWNER_QUIET_LINE } from '../../src/monitoring/DiskStewardPoster.js';
 import { notificationContext, QuietRecordedError } from '../../src/messaging/NotificationSelectivityGate.js';
 import type { DuePost } from '../../src/monitoring/DiskSteward.js';
 
@@ -51,12 +51,22 @@ describe('makeDiskStewardSender', () => {
     expect(seen[0]).toMatchObject({ category: 'disk-steward' });
     expect(seen[1]).toMatchObject({ category: 'attention-item', significantClass: 'agent-cannot-operate', sourceContext: `disk-steward:m_studio:${NOW}:2` });
   });
-  it('a quiet record counts as posted; no topic or a thrown send is a failure', async () => {
+  it('a quiet record is NOT delivered (no-data-loss §6.2); no topic or a thrown send is a failure', async () => {
     const quiet = makeDiskStewardSender({ resolveTopicId: async () => 1, sendToTopic: async () => { throw new QuietRecordedError({ delivered: false, recorded: true, quietId: 'q1' }); }, log: () => {} });
-    expect(await quiet(base)).toBe('posted');
+    expect(await quiet(base)).toBe('not-delivered');
     const noTopic = makeDiskStewardSender({ resolveTopicId: async () => null, sendToTopic: async () => ({}), log: () => {} });
     expect(await noTopic(base)).toBe('failed');
     const broken = makeDiskStewardSender({ resolveTopicId: async () => 1, sendToTopic: async () => { throw new Error('down'); }, log: () => {} });
     await expect(broken(base)).rejects.toThrow('down');
+  });
+
+  it('the owner\'s explicit quiet choice is shown in the post itself (§6.2)', async () => {
+    const sent: string[] = [];
+    const quieted = makeDiskStewardSender({ resolveTopicId: async () => 1, sendToTopic: async (_t, text) => { sent.push(text); return {}; }, log: () => {}, ownerQuieted: () => true });
+    expect(await quieted(base)).toBe('posted');
+    expect(sent[0]).toContain(OWNER_QUIET_LINE);
+    const normal = makeDiskStewardSender({ resolveTopicId: async () => 1, sendToTopic: async (_t, text) => { sent.push(text); return {}; }, log: () => {} });
+    await normal(base);
+    expect(sent[1]).not.toContain(OWNER_QUIET_LINE);
   });
 });

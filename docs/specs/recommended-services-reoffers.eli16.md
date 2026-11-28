@@ -6,6 +6,8 @@ Instar agents can offer to set up outside services for the person they work for:
 
 This change builds the first and simplest of those reasons: a real problem that the service would fix. The first problem wired in is a voice note the agent can't read because nothing on its machine can turn speech into text. If the person said no to voice transcription earlier, the agent now sends one short message: what happened, that this is what the service fixes, the same facts as the first offer (what it costs, what leaves the machine, whose account), and a link to say yes. If it's still no, the person does nothing, and the no stands.
 
+A second problem is wired in too: when the agent starts, it checks whether any of its settings points at a saved password or key that is no longer there. That happens when the encrypted store was lost or can't be opened, and no vault keeps a copy. If the person said no to Bitwarden earlier, the agent asks once more, in the same way. The message never names which setting, only that one is missing.
+
 ## The rules, all in code
 
 - Only a no, or an offer the person never answered, can be asked about again. The problem must have happened after that no.
@@ -18,7 +20,7 @@ This change builds the first and simplest of those reasons: a real problem that 
 
 ## What is new
 
-A new kind of row in the saved record of choices, for "a problem was seen", "about to ask" and "asked" (the last only once the chat platform confirms the message arrived). A small set of rules decides when to ask. The voice transcription code tells the agent each time a voice note can't be read: Telegram, WhatsApp, Slack and the phone app all go through it.
+A new kind of row in the saved record of choices, for "a problem was seen", "about to ask" and "asked" (the last only once the chat platform confirms the message arrived). A small set of rules decides when to ask. The start-up check runs once per server start. The voice transcription code tells the agent each time a voice note can't be read: Telegram, WhatsApp, Slack and the phone app all go through it.
 
 ## Safeguards
 

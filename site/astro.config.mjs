@@ -93,6 +93,7 @@ export default defineConfig({
             { label: 'Relationships', slug: 'features/relationships' },
             { label: 'Safety Gates', slug: 'features/safety-gates' },
             { label: 'Coherence Gate', slug: 'features/coherence-gate' },
+            { label: 'Design Policy Inspection', slug: 'features/design-policy-inspection' },
             { label: 'Intent Alignment', slug: 'features/intent' },
             { label: 'Multi-Machine', slug: 'features/multi-machine' },
             { label: 'Serendipity Protocol', slug: 'features/serendipity' },

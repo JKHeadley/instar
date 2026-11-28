@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { createHmac } from 'node:crypto';
+import { promoteConsumerFromProposal } from '../helpers/feedbackConsumerPromotion.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
@@ -50,6 +51,25 @@ function prepare(prefix: string) {
   fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'e2e', authToken: AUTH, dashboardPin: PIN }));
   return { root, stateDir };
+}
+
+/**
+ * The drain and triage ticks answer 202 and run in the background; neither exposes a completion
+ * promise to the HTTP caller, so the test waits on the observable result. A fixed 200 x 10 ms loop
+ * (about 2 s) failed main on a loaded Studio (2026-11-27, e2e shard at 1332 s): wait on the same
+ * condition up to a deadline instead, and say what was last seen if it is not reached. The lifecycle
+ * assertions that follow are unchanged.
+ */
+const BACKGROUND_TICK_DEADLINE_MS = 30_000;
+async function waitForBackground<T>(label: string, probe: () => Promise<T> | T, done: (value: T) => boolean, describeLast: (value: T) => Promise<string> | string): Promise<T> {
+  const startedAt = Date.now();
+  let last = await probe();
+  while (!done(last) && Date.now() - startedAt < BACKGROUND_TICK_DEADLINE_MS) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    last = await probe();
+  }
+  if (!done(last)) throw new Error(`${label} not reached within ${BACKGROUND_TICK_DEADLINE_MS} ms; last seen: ${await describeLast(last)}`);
+  return last;
 }
 
 describe('feedback triage — production lifecycle (live on a development agent)', () => {
@@ -130,12 +150,13 @@ describe('feedback triage — production lifecycle (live on a development agent)
       provider: 'claude-code', modelFamily: 'fable-5', promptVersion: 'feedback-readiness-v1', schemaVersion: 'feedback-readiness-decision-v1',
       decisionPointId: 'feedback-cluster-readiness', maxBatch: 50, maxTokens: 900, maxDailySpendUsd: 5,
     })).status).toBe(200);
-    expect((await request(app).post('/feedback-factory/consumer/promote').set(HX)
-      .send({ pin: PIN, approvedBatchBound: 10, evidenceHash: 'b'.repeat(64), operatorDecisionId: 'operator-promote' })).status).toBe(200);
+    const { promote } = await promoteConsumerFromProposal(app, { auth: AUTH, pin: PIN, agentId: 'e2e', operatorDecisionId: 'operator-promote', noncePrefix: 'feedback-triage-sim' });
+    expect(promote.status, JSON.stringify(promote.body)).toBe(200);
     const drainTick = await request(app).post('/feedback-factory/drain/tick')
       .set({ ...HX, 'X-Instar-AgentId': 'e2e', 'X-Instar-Request-Nonce': 'feedback-triage-e2e-0001' });
     expect(drainTick.status).toBe(202);
-    for (let attempt = 0; attempt < 200 && tracker.list().filter((i) => i.feedbackWorkKey).length < 2; attempt++) await new Promise((r) => setTimeout(r, 10));
+    await waitForBackground('drain tick: two feedback initiatives', () => tracker.list().filter((i) => i.feedbackWorkKey).length, (count) => count >= 2,
+      async (count) => `${count} initiative(s); drain status ${JSON.stringify((await request(app).get('/feedback-factory/drain/status').set(H)).body).slice(0, 600)}`);
     const initiatives = tracker.list().filter((i) => i.feedbackWorkKey);
     const drainStatus = await request(app).get('/feedback-factory/drain/status').set(H);
     expect(initiatives, JSON.stringify(drainStatus.body)).toHaveLength(2);
@@ -151,11 +172,8 @@ describe('feedback triage — production lifecycle (live on a development agent)
 
     const tick = await request(app).post('/feedback-factory/triage/tick').set(HX);
     expect(tick.status).toBe(202);
-    let summary = await request(app).get('/feedback-factory/triage/summary').set(H);
-    for (let attempt = 0; attempt < 200 && summary.body.lastTick?.runId !== tick.body.runId; attempt++) {
-      await new Promise((r) => setTimeout(r, 10));
-      summary = await request(app).get('/feedback-factory/triage/summary').set(H);
-    }
+    const summary = await waitForBackground('triage tick: summary reports this run', () => request(app).get('/feedback-factory/triage/summary').set(H),
+      (response) => response.body.lastTick?.runId === tick.body.runId, (response) => JSON.stringify(response.body).slice(0, 600));
     expect(summary.body).toMatchObject({ authority: 'active', counts: { work: 1, hold: 1 }, byReason: { 'hold:ignore-shadow': 1 }, ignoreLive: false });
 
     const queue = await request(app).get('/feedback-factory/triage/queue').set(H);
@@ -275,11 +293,8 @@ describe('feedback triage — production account-selection wiring', () => {
         links: [{ type: 'other', label: 'Feedback cluster', ref: 'spare-e2e' }] });
       const tick = await request(app).post('/feedback-factory/triage/tick').set(HX);
       expect(tick.status).toBe(202);
-      let summary = await request(app).get('/feedback-factory/triage/summary').set(H);
-      for (let i = 0; i < 200 && summary.body.lastTick?.runId !== tick.body.runId; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        summary = await request(app).get('/feedback-factory/triage/summary').set(H);
-      }
+      const summary = await waitForBackground('spare-account triage tick: summary reports this run', () => request(app).get('/feedback-factory/triage/summary').set(H),
+        (response) => response.body.lastTick?.runId === tick.body.runId, (response) => JSON.stringify(response.body).slice(0, 600));
       expect(summary.body.lastTick).toMatchObject({ result: 'succeeded', calls: 1, decided: 1 });
       expect(modelAccounts).toEqual(['spare']);
     } finally {

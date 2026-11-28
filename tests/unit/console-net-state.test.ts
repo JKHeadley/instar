@@ -298,3 +298,53 @@ describe('review fixes', () => {
     expect(bearerOf(undefined, get)).toBe('tok-1');
   });
 });
+
+
+describe('actual reconnect catch-up', () => {
+  it('shows Updating until page reads finish; successful probes do not finish or duplicate catch-up', async () => {
+    const r = rig({ online: false });
+    let finish!: (ok: boolean) => void;
+    r.onBack.mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    r.net.wentOffline(); r.set({ online: true });
+    await r.net.probeNow();
+    expect(r.net.state().mode).toBe('updating');
+    expect(lineText(r.net.state(), Date.now())).toBe('Updating…');
+    await r.net.fetch('/health');
+    await r.net.probeNow();
+    expect(r.net.state().mode).toBe('updating');
+    expect(r.onBack).toHaveBeenCalledTimes(1);
+    finish(true); await vi.advanceTimersByTimeAsync(0);
+    expect(r.net.state().mode).toBe('fresh');
+  });
+
+  it('does not let an old catch-up clear a newer offline state', async () => {
+    const r = rig({ online: false });
+    let finish!: (ok: boolean) => void;
+    r.onBack.mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    r.net.wentOffline(); r.set({ online: true }); await r.net.probeNow();
+    expect(r.net.state().mode).toBe('updating');
+    r.set({ online: false }); r.net.wentOffline();
+    finish(true); await vi.advanceTimersByTimeAsync(0);
+    expect(r.net.state().mode).toBe('offline');
+  });
+
+  it('retains a weak state and retry when actual page catch-up fails', async () => {
+    const r = rig({ online: false });
+    r.onBack.mockResolvedValue(false);
+    r.net.wentOffline(); r.set({ online: true }); await r.net.probeNow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.net.state().mode).toBe('weak');
+    expect(r.onBack).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+  });
+
+  it('sign-out clear invalidates catch-up and its retry timer', async () => {
+    const r = rig({ online: false });
+    let finish!: (ok: boolean) => void;
+    r.onBack.mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    r.net.wentOffline(); r.set({ online: true }); await r.net.probeNow();
+    r.net.clear(); finish(false); await vi.advanceTimersByTimeAsync(0);
+    expect(r.net.state().mode).toBe('fresh');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

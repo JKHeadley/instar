@@ -71,6 +71,37 @@ const isPolicy = (p: string) => p === 'docs/DESIGN-STANDARD.md' || p.startsWith(
 const uiRoot = (p: string) => p.startsWith('dashboard/') || p.startsWith('dashboard-pair/');
 const wholeHtml = (text: string) => /<!doctype\s+html\b|<html(?:\s|>)/i.test(text);
 
+function registeredPaths(registries: readonly ScreenRegistry[]): Set<string> {
+  const out = new Set<string>();
+  for (const registry of registries) for (const screen of registry.screens) for (const source of [...screen.sources, ...screen.shared]) out.add(repoPath(source)!);
+  return out;
+}
+
+/**
+ * The changed paths whose source text classifyDesignPaths will actually read:
+ * unregistered, non-test, non-policy script files outside the UI roots. Every
+ * other path is classified from its name and the registries alone, so a caller
+ * reads only these blobs. An invalid registry or diff makes classification
+ * unreadable without any text, so nothing needs reading then.
+ */
+export function pathsNeedingSourceText(input: {
+  changedPaths: readonly string[];
+  baseRegistry: unknown;
+  candidateRegistry?: unknown;
+}): string[] {
+  if (validateScreenRegistry(input.baseRegistry).length) return [];
+  if (input.candidateRegistry !== undefined && validateScreenRegistry(input.candidateRegistry).length) return [];
+  const registries = [input.baseRegistry as ScreenRegistry, ...(input.candidateRegistry ? [input.candidateRegistry as ScreenRegistry] : [])];
+  const registered = registeredPaths(registries);
+  const out: string[] = [];
+  for (const raw of input.changedPaths) {
+    const p = repoPath(raw);
+    if (!p || registered.has(p) || isTest(p) || isPolicy(p) || uiRoot(p) || /\.(?:html?|css)$/i.test(p)) continue;
+    if (/\.[cm]?[jt]sx?$/.test(p)) out.push(p);
+  }
+  return [...new Set(out)];
+}
+
 /**
  * The executing caller supplies trusted BASE code and the complete name-only git diff.
  * Candidate metadata may register new sources, but cannot erase base classification.

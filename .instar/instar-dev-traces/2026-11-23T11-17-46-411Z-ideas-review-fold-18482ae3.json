@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "ideas-review-fold",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T11:17:46.411Z",
+  "artifactPath": "upgrades/side-effects/ideas-review-fold.md",
+  "artifactSha256": "b630dd48ed8dec1c8c6b5d6d00101b3818d21ae03e0fe61a2888d8068f20efa5",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/ideas.js",
+    "docs/specs/ideas-review-fold.eli16.md",
+    "tests/unit/ecosystem/console-ideas-page.test.ts",
+    "upgrades/next/ideas-review-fold.md",
+    "upgrades/side-effects/ideas-review-fold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Normal main merge preserves both independent CSS additions and original unreleased fragment; no authority or behavior change from the resolution.",
+  "eli16Path": "docs/specs/ideas-review-fold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ideas-review-fold.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "merge-integrity",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
