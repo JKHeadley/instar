@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "judgment-call-rating-record",
+  "sessionId": "c5002075-e739-469b-b5ff-c90d1c4e7ea3",
+  "timestamp": "2026-11-28T09:30:40.862Z",
+  "artifactPath": "upgrades/side-effects/judgment-call-rating-record.md",
+  "artifactSha256": "cc3d348656a7f45fe9918fbfac60a3f017a2653874f439de76c189b5483ea060",
+  "specPath": "docs/specs/judgment-call-rating.md",
+  "coveredFiles": [
+    "scripts/instar-dev-precommit.js",
+    "scripts/lib/instar-dev-scope.mjs",
+    "scripts/lib/judgment-context.mjs",
+    "skills/instar-dev/SKILL.md",
+    "skills/instar-dev/scripts/write-trace.mjs"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds the one new refusal at the instar-dev commit gate (a passing commit whose decision record cannot be saved) and records each tier call's context in that record; the gate decides what every Instar commit may land, so this is Tier 2 under the approved judgment-call-rating spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

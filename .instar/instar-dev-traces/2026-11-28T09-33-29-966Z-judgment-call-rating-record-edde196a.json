@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "judgment-call-rating-record",
+  "sessionId": "c5002075-e739-469b-b5ff-c90d1c4e7ea3",
+  "timestamp": "2026-11-28T09:33:29.966Z",
+  "artifactPath": "upgrades/side-effects/judgment-call-rating-record.md",
+  "artifactSha256": "501dc6c39b105eb7836b1f53b2078351795ea3d4987348f89e27b38e9578499b",
+  "specPath": "docs/specs/judgment-call-rating.md",
+  "coveredFiles": [
+    "scripts/instar-dev-precommit.js",
+    "scripts/lib/instar-dev-scope.mjs",
+    "scripts/lib/judgment-context.mjs",
+    "skills/instar-dev/SKILL.md",
+    "skills/instar-dev/scripts/write-trace.mjs"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Records the post-review commit-time edits in the side-effects artifact of the judgment-call-rating part A change (Tier 2: the commit gate's one new refusal); no code changes in this commit.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

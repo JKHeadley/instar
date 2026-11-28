@@ -12,7 +12,7 @@
  *     --files "src/a.ts,src/b.ts,tests/x.test.ts" \
  *     [--spec docs/specs/<slug>.md] \
  *     [--tier 1|2|3] \
- *     [--tier-reasoning "<one or two sentences>"] \
+ *     [--tier-reasoning "<one or two sentences; copied into the PUBLIC decision record>"] \
  *     [--eli16-path docs/specs/<slug>.eli16.md] \
  *     [--side-effects-path upgrades/side-effects/<slug>.md] \
  *     [--second-pass true|false|not-required] \
@@ -358,3 +358,7 @@ try {
 }
 
 console.log(path.relative(ROOT, traceFile));
+if (tierReasoning != null) {
+  // docs/specs/judgment-call-rating.md: the reasoning is copied into the commit's decision record.
+  console.error('note: the tier reasoning is copied into this commit\'s decision record, which is public once pushed.');
+}

@@ -1,0 +1,133 @@
+{
+  "ts": "2026-11-28T09:31:57.977Z",
+  "slug": "judgment-call-rating-record",
+  "headCommit": "8d99203f75a2e7b05e177c93d1abb09ea5ac7bec",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 408,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/instar-dev-precommit.js",
+      "scripts/lib/instar-dev-scope.mjs",
+      "scripts/lib/judgment-context.mjs",
+      "skills/instar-dev/SKILL.md",
+      "skills/instar-dev/scripts/write-trace.mjs"
+    ],
+    "addedLines": 380,
+    "deletedLines": 28
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked",
+  "judgment": {
+    "version": 1,
+    "tierReasoning": "Adds the one new refusal at the instar-dev commit gate (a passing commit whose decision record cannot be saved) and records each tier call's context in that record; the gate decides what every Instar commit may land, so this is Tier 2 under the approved judgment-call-rating spec.",
+    "trace": {
+      "path": ".instar/instar-dev-traces/2026-11-28T09-30-40-862Z-judgment-call-rating-record-8f808896.json",
+      "hash": "bc1521bbda3e9d92c4c3cdd128f3e09e92ffbfca",
+      "staged": true
+    },
+    "traceDiffers": false,
+    "artifact": {
+      "path": "upgrades/side-effects/judgment-call-rating-record.md",
+      "hash": "d51b7eb2a4c4c65a0f164a6ad38ec98d718eebe2",
+      "stagedHash": "d51b7eb2a4c4c65a0f164a6ad38ec98d718eebe2"
+    },
+    "spec": {
+      "path": "docs/specs/judgment-call-rating.md",
+      "hash": "ea84c811f8e55f3aa24c988ab804e8da83505184",
+      "stagedHash": "ea84c811f8e55f3aa24c988ab804e8da83505184",
+      "staged": true,
+      "convergenceReport": {
+        "path": "docs/specs/reports/judgment-call-rating-convergence.md",
+        "stagedHash": "895b4154c76e4b68057ba424fde24923cb7fed7a"
+      }
+    },
+    "template": "a33b7e354c2b936bb350305efddc4de1f6e1d658",
+    "headings": {
+      "1. Over-block": {
+        "present": true,
+        "chars": 512
+      },
+      "2. Under-block": {
+        "present": true,
+        "chars": 466
+      },
+      "3. Level-of-abstraction fit": {
+        "present": true,
+        "chars": 395
+      },
+      "4. Signal vs authority compliance": {
+        "present": true,
+        "chars": 428
+      },
+      "4b. Judgment-point check": {
+        "present": true,
+        "chars": 216
+      },
+      "5. Interactions": {
+        "present": true,
+        "chars": 1465
+      },
+      "6. External surfaces": {
+        "present": true,
+        "chars": 441
+      },
+      "7. Multi-machine posture": {
+        "present": true,
+        "chars": 216
+      },
+      "8. Rollback cost": {
+        "present": true,
+        "chars": 189
+      },
+      "Second-pass review": {
+        "present": true,
+        "chars": 1150
+      }
+    },
+    "secondPassStatus": "required-concurred",
+    "perFileLines": [
+      {
+        "path": "scripts/instar-dev-precommit.js",
+        "added": 122,
+        "deleted": 26,
+        "baseBlob": "551cc0b5fa487a5a80ca24a1222e1172e5d63d78",
+        "stagedBlob": "fe38f9a4ed781c79b7a210b0f65a63d41871ebd3"
+      },
+      {
+        "path": "scripts/lib/instar-dev-scope.mjs",
+        "added": 27,
+        "deleted": 0,
+        "baseBlob": null,
+        "stagedBlob": "1b3e0dcd2365e8465991458f278f22f1c1e25302"
+      },
+      {
+        "path": "scripts/lib/judgment-context.mjs",
+        "added": 225,
+        "deleted": 0,
+        "baseBlob": null,
+        "stagedBlob": "f567f15bb6a84a974bfd236ef95db9de1ecca1f8"
+      },
+      {
+        "path": "skills/instar-dev/SKILL.md",
+        "added": 1,
+        "deleted": 1,
+        "baseBlob": "74546fa8bb8532ab24cc11e33dbfc71a08b8440e",
+        "stagedBlob": "593c9fa5aa3b1502a900aa3073968e107488a34e"
+      },
+      {
+        "path": "skills/instar-dev/scripts/write-trace.mjs",
+        "added": 5,
+        "deleted": 1,
+        "baseBlob": "e477625d51fd54f81e4796071b0c72f016746992",
+        "stagedBlob": "2f0aa7e6460a8751a7d6895feff07e1cc2087023"
+      }
+    ]
+  }
+}
