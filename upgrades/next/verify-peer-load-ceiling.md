@@ -8,7 +8,7 @@ A Local Verify peer entry can specify a stricter load ceiling for new full verif
 
 ## What to Tell Your User
 
-Use an optional `maxLoadPerCore` on a peer entry to let that machine take new runs only when its latest load reading is below the value.
+Set an optional load limit on a peer entry to let that machine take new runs only when its latest reading is below the limit.
 
 ## Summary of New Capabilities
 
