@@ -27,6 +27,7 @@ const LOCK = {
 
 describe('classifyHarness: paths', () => {
   it.each([
+    'src/designGate/policyInspection.ts', 'src/commands/designInspect.ts', 'docs/design/screens.json', 'docs/design/coverage.json', 'docs/design/rule-ids.lock.json',
     'scripts/local-verify.mjs', 'scripts/safe-merge.mjs', 'src/localVerify/record.ts',
     'src/monitoring/greenPrLogic.ts', 'src/monitoring/GreenPrAutoMerger.ts', 'src/monitoring/MergeRunner.ts',
     'src/monitoring/greenPrAutomergeWiring.ts', 'vitest.config.ts', 'vitest.e2e.config.ts',
@@ -34,6 +35,10 @@ describe('classifyHarness: paths', () => {
     'tsconfig.json', 'tsconfig.build.json', 'scripts/fix-better-sqlite3.cjs',
   ])('%s is harness-changing', (p) => {
     expect(classifyHarness({ changedPaths: ['src/core/x.ts', p] })).toEqual({ harnessChanging: true, reasons: [`path:${p}`] });
+  });
+  it('the design standard and other design pages are not, so ordinary rule changes skip independent review', () => {
+    expect(classifyHarness({ changedPaths: ['docs/DESIGN-STANDARD.md', 'docs/design/opt-in-heartbeat.md', 'docs/design/manual-inspection.md'] }))
+      .toEqual({ harnessChanging: false, reasons: [] });
   });
   it('ordinary source and test changes are not', () => {
     expect(classifyHarness({ changedPaths: ['src/core/x.ts', 'tests/unit/x.test.ts', 'docs/a.md', 'src/monitoring/greenPrLogicHelpers.ts'] }))

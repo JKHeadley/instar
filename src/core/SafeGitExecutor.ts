@@ -440,6 +440,7 @@ const PRE_VERB_FLAGS_NO_VALUE: ReadonlySet<string> = new Set([
   '--no-pager',
   '-P',
   '--no-replace-objects',
+  '--no-lazy-fetch', // turns off promisor remote-helper execution on local object reads
   '--literal-pathspecs',
   '--glob-pathspecs',
   '--noglob-pathspecs',
