@@ -3,6 +3,163 @@
   "version": 1,
   "censusDate": "2026-06-05",
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
+  "authorityCensus": {
+    "version": 1,
+    "contracts": [
+      {
+        "kind": "job-definition",
+        "scope": "agent",
+        "mode": "observe",
+        "fields": [
+          "enabled",
+          "schedule",
+          "executor",
+          "placement",
+          "portability"
+        ],
+        "plannedOwner": "scheduler/AgentMdAtomicSave.ts",
+        "plannedStore": "job-manifests",
+        "liveStores": [
+          "legacy-job-definitions",
+          "job-manifests"
+        ],
+        "liveSelection": "JobLoader merges legacy and per-slug definitions, with manifest precedence on overlap and portable import exclusions. Legacy routes still write legacy rows.",
+        "identity": "Agent and canonical job slug, with separately scoped placement provenance.",
+        "versionRule": "Declared effective definition revision and owner epoch after the reviewed cutover.",
+        "retention": "Keep every original definition and manifest-only job until the owning migration verifies the revised retention policy.",
+        "reconciliation": "AgentMdReconcile reports installation residue; split writer checks remain a migration concern.",
+        "recovery": "Preserve both legacy and per-slug inputs plus applicable body and import receipts.",
+        "projections": []
+      },
+      {
+        "kind": "project-lifecycle",
+        "scope": "agent",
+        "mode": "observe",
+        "fields": [
+          "projectId",
+          "goal",
+          "status",
+          "phase",
+          "ownership",
+          "completionChecklist"
+        ],
+        "plannedOwner": "core/InitiativeTracker.ts",
+        "plannedStore": "taskflow-project-rows",
+        "liveStores": [
+          "legacy-initiatives",
+          "taskflow-project-rows",
+          "chief-of-staff-bindings"
+        ],
+        "liveSelection": "InitiativeTracker uses TaskFlow when wired and legacy JSON otherwise. Chief of Staff maintains independent conversation bindings and lifecycle; membership may disagree.",
+        "identity": "Agent and verified canonical project ID. Conversation keys are linked evidence, not automatically equivalent project IDs.",
+        "versionRule": "Tracker and binding revisions remain independent while installed writers are split.",
+        "retention": "Retain canonical project history and original supervision evidence under their owner policies. Rebuild the digest as needed.",
+        "reconciliation": "Compare authorized exact IDs and verified aliases before any cutover.",
+        "recovery": "Retain original legacy files and the approved TaskFlow and Chief of Staff recovery sources.",
+        "projections": [
+          "project-digest"
+        ]
+      }
+    ],
+    "stores": [
+      {
+        "id": "legacy-job-definitions",
+        "role": "legacy",
+        "category": "job-definitions",
+        "locations": [
+          "jobs.json"
+        ],
+        "adapters": [
+          "commands/init.ts",
+          "commands/setup.ts",
+          "server/routes.ts",
+          "core/AgentConnector.ts",
+          "core/BlockerLearningLoop.ts",
+          "core/PostUpdateMigrator.ts",
+          "commands/jobMigrate.ts",
+          "scheduler/MigrationInvariants.ts",
+          "scheduler/JobCatalogReconcile.ts"
+        ]
+      },
+      {
+        "id": "job-manifests",
+        "role": "target",
+        "category": "job-definitions",
+        "locations": [
+          "jobs/schedule/"
+        ],
+        "adapters": [
+          "scheduler/AgentMdAtomicSave.ts",
+          "scheduler/InstallBuiltinJobs.ts",
+          "scheduler/DisabledBodyDrift.ts",
+          "commands/jobMigrate.ts",
+          "server/routes.ts",
+          "core/JobPortableFs.ts",
+          "core/JobPortableSync.ts",
+          "core/PostUpdateMigrator.ts",
+          "scheduler/MigrationInvariants.ts",
+          "scheduler/JobCatalogReconcile.ts"
+        ]
+      },
+      {
+        "id": "legacy-initiatives",
+        "role": "legacy",
+        "category": "projects-registry",
+        "locations": [
+          "initiatives.json"
+        ],
+        "adapters": [
+          "core/InitiativeTracker.ts"
+        ]
+      },
+      {
+        "id": "taskflow-project-rows",
+        "role": "target",
+        "category": "projects-registry",
+        "locations": [
+          "task-flows.db"
+        ],
+        "adapters": [
+          "commands/server.ts",
+          "tasks/task-flow-registry.store.sqlite.ts",
+          "core/InitiativeTracker.ts"
+        ],
+        "sharedWith": [
+          "TaskFlow non-project records"
+        ]
+      },
+      {
+        "id": "chief-of-staff-bindings",
+        "role": "legacy",
+        "category": "projects-registry",
+        "locations": [
+          "state/coherence-journal/*.chief-of-staff-record.jsonl",
+          "state/coherence-journal/*.chief-of-staff-record.*.jsonl"
+        ],
+        "adapters": [
+          "core/ChiefOfStaffLoop.ts",
+          "core/CoherenceJournal.ts",
+          "core/ReplicatedRecordEmitter.ts"
+        ],
+        "sharedWith": [
+          "Chief of Staff check, action, note and lease records"
+        ]
+      },
+      {
+        "id": "project-digest",
+        "role": "projection",
+        "category": "derived-projects-digest",
+        "locations": [
+          "projects-digest.cache",
+          "state/projects-digest.cache",
+          "projects/.digest.cache"
+        ],
+        "adapters": [
+          "core/ProjectDigestCache.ts"
+        ]
+      }
+    ]
+  },
   "entries": [
     {
       "category": "security-review-preflight-packets",

@@ -52,6 +52,22 @@ describe('parseSupervisionOutput (strict)', () => {
 });
 
 describe('ScriptJobSupervisor.pass', () => {
+  it('scrubs JSON snippets and private key blocks before encoding', async () => {
+    const secret = 'exampleValue12345';
+    const keyBody = 'QUJDREVGRw==';
+    const snippet = `{"api_key":"${secret}"}`;
+    const pem = ['-----BEGIN PRIVATE KEY-----', keyBody, '-----END PRIVATE KEY-----'].join('\n');
+    const t = setup({ jobs: [row('a', 'm-1', { recentOutputs: [snippet, pem, 'x'.repeat(965) + pem], machineNickname: 'HTTPS://demo:example-pass@invalid.test/' })] }, '{"flags":[]}');
+    expect((await t.sup.pass()).ok).toBe(true);
+    const stored = t.prompts[0];
+    expect(stored).toContain('REDACTED');
+    expect(stored).toContain('api_key');
+    expect(stored).not.toContain(secret);
+    expect(stored).not.toContain(keyBody);
+    expect(stored).not.toContain('example-pass');
+    expect(stored).not.toContain('BEGIN PRIVATE KEY');
+  });
+
   it('is registered as a reflector component', () => {
     expect(COMPONENT_CATEGORY.ScriptJobSupervisor).toBe('reflector');
   });

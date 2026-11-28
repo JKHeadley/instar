@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "detail-page-responsive-grids",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T04:15:28.775Z",
+  "artifactPath": "upgrades/side-effects/detail-page-responsive-grids.md",
+  "artifactSha256": "47a0f1af6246f7cd2417e0a6a8c52a8920c25f0fcca1a0a91a42ab8061a927f5",
+  "coveredFiles": [
+    "dashboard/console/accounts.js",
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/health.js",
+    "dashboard/console/ideas.js",
+    "dashboard/console/machine-care.js",
+    "dashboard/console/notifications.js",
+    "docs/specs/dashboard-ui-quality-standard.md",
+    "docs/specs/detail-page-responsive-grids.eli16.md",
+    "tests/unit/console-dom.test.ts",
+    "upgrades/next/detail-page-responsive-grids.md",
+    "upgrades/side-effects/detail-page-responsive-grids.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible presentation layout repair; preserves source actions, ordering, permissions and dedicated workspaces",
+  "eli16Path": "docs/specs/detail-page-responsive-grids.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/detail-page-responsive-grids.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "backreference-infrastructure-population",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T00:45:18.304Z",
+  "artifactPath": "upgrades/side-effects/backreference-infrastructure-population.md",
+  "artifactSha256": "a4b38414ab08e458c1408e25e628eedf69b09e4be366dbd535897d7dd467ef05",
+  "coveredFiles": [
+    "docs/audits/backreference-infrastructure-population-building-2026-11-27.json",
+    "docs/specs/reports/backreference-infrastructure-population-building-review-2026-11-27.md",
+    "docs/standards-registry-area-audits.json"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Records the Building family audit for the article PR 4024 changes, keeping its floor; documentation and audit data only",
+  "eli16Path": "docs/specs/backreference-infrastructure-population.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/backreference-infrastructure-population.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

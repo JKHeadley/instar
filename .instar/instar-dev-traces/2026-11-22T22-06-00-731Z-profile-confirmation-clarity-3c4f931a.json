@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "slug": "profile-confirmation-clarity",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-22T22:06:00.731Z",
+  "artifactPath": "upgrades/side-effects/profile-confirmation-clarity.md",
+  "artifactSha256": "4d29f9fd6e97b517206f04150cf2529e721f2730eeebb8d00325ba9ff9e5d7c9",
+  "specPath": "docs/specs/profile-confirmation-clarity.md",
+  "coveredFiles": [
+    "docs/design-feedback/DF-0005-engine-change-confirmation.md",
+    "docs/specs/profile-confirmation-clarity.eli16.md",
+    "docs/specs/profile-confirmation-clarity.md",
+    "docs/specs/reports/profile-confirmation-clarity-review.md",
+    "src/commands/server.ts",
+    "src/core/ProfileProposalRequests.ts",
+    "src/core/TopicProfileStore.ts",
+    "src/core/handleProfileProposalReply.ts",
+    "src/core/profileProposalPlacement.ts",
+    "src/core/topicProfileIngress.ts",
+    "src/core/topicProfileWriteSurface.ts",
+    "src/data/awareness/profile-change-questions.md",
+    "src/server/routes.ts",
+    "tests/e2e/owner-framework-confirm-lifecycle.test.ts",
+    "tests/integration/topic-profile-routes.test.ts",
+    "tests/unit/profile-proposal-placement.test.ts",
+    "tests/unit/profile-proposal-requests.test.ts",
+    "tests/unit/topicProfileWriteSurface.test.ts",
+    "upgrades/next/profile-confirmation-clarity.md",
+    "upgrades/side-effects/profile-confirmation-clarity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive confirmation flow; bounded closure expressly recorded without claiming full convergence.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot user-driven confirmation; no self-triggered loop."
+  }
+}
