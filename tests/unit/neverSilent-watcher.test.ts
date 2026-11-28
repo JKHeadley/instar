@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { NeverSilentStore } from '../../src/monitoring/neverSilent/NeverSilentStore.js';
-import { NeverSilentWatcher, askCallbackData, type NeverSilentConfig, type NeverSilentDeps, type SessionFacts } from '../../src/monitoring/neverSilent/NeverSilentWatcher.js';
+import { NeverSilentWatcher, askCallbackData, type NeverSilentConfig, type NeverSilentDeps, type NoticeUndelivered, type SessionFacts } from '../../src/monitoring/neverSilent/NeverSilentWatcher.js';
 import type { ConversationSilenceJudge, SilenceVerdict } from '../../src/monitoring/neverSilent/ConversationSilenceJudge.js';
 
 let t = 1_000_000;
@@ -262,6 +262,34 @@ describe('NeverSilentWatcher', () => {
     expect(sent).toHaveLength(1);
   });
 
+  it.each([
+    ['a held-quiet send', async () => ({ undelivered: 'held-quiet' as const }), 'held-quiet'],
+    ['a send with no message id', async () => ({ undelivered: 'no-message-id' as const }), 'no-message-id'],
+    ['a sender with no adapter', async () => ({ undelivered: 'no-adapter' as const }), 'no-adapter'],
+    ['a sender that cannot say why', async () => null, 'no-receipt'],
+    ['a sender with an unknown label', async () => ({ undelivered: 'chat 123 private words' }) as unknown as NoticeUndelivered, 'unknown-reason'],
+    ['a send that throws', async () => { throw new TypeError('chat 4290919884 private words'); }, 'threw:TypeError'],
+  ])('an undelivered notice logs why: %s', async (_label, send, reason) => {
+    const events: Array<Record<string, unknown>> = [];
+    const h = harness({ sendNotice: send as NeverSilentDeps['sendNotice'], log: (e) => events.push(e) }, { judge: false });
+    h.w.onInbound('telegram', '7', '101', 'hello');
+    t += 61_000;
+    await h.w.tick();
+    const undelivered = events.filter((e) => e.event === 'notice-undelivered');
+    expect(undelivered.length).toBeGreaterThan(0);
+    for (const e of undelivered) expect(e.reason).toBe(reason);
+    expect(JSON.stringify(events)).not.toContain('private words');
+    expect(events.some((e) => e.event === 'notice-sent')).toBe(false);
+  });
+  it('a bad error name is not copied into the reason', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const err = Object.assign(new Error('x'), { name: 'see https://example.invalid/private' });
+    const h = harness({ sendNotice: async () => { throw err; }, log: (e) => events.push(e) }, { judge: false });
+    h.w.onInbound('telegram', '7', '101', 'hello');
+    t += 61_000;
+    await h.w.tick();
+    expect(events.find((e) => e.event === 'notice-undelivered')?.reason).toBe('threw:Error');
+  });
   it('obligations survive a restart (durable store)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-dur-'));
     new NeverSilentStore(dir, now).accept({ platform: 'telegram', conversationKey: '7', inboundMessageId: '1', text: 'x', deadlineMs: 1000 });

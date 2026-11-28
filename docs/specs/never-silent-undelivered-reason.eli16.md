@@ -1,0 +1,5 @@
+# Saying why a "still working on it" notice failed (ELI16)
+
+When you send the agent a message and it goes quiet for too long, a watcher posts a short notice into the chat so you know your message was seen. Sometimes that notice itself fails to go out. Until now the server only wrote "notice not delivered" and nothing else, because the code that sends it turned every problem into a blank. On the Studio last week more than half of these notices failed, and the log could not say why.
+
+Now each failed notice is written down with one short label: it was held back as a quiet notification, the chat service (Telegram or Slack) gave no message number, there was no connection to it, the sender could not tell, or the send crashed with a named kind of error. Nothing private, such as message text or the error message, goes into the log. Nothing about sending, retrying or counting changes yet. This is the first step, so the next change can count failures per incident and add a fallback based on real causes.
