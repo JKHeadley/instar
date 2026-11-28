@@ -40,6 +40,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Process-local memo of files already flushed, reached through SecretStore. It only skips a repeat fsync of unchanged content and holds no inbound-delivery or lifecycle logic."
     },
     {
+      "file": "src/core/keychainStdinWrite.ts",
+      "reason": "SEC-155 keychain write helper reached through SecretStore: it sends one add-generic-password line to `security -i` on standard input so a secret never sits in process arguments. No inbound-delivery or lifecycle logic; outside the Stage-B canaried delivery path, certified by tests/unit/sec155-keychain-stdin.test.ts."
+    },
+    {
       "file": "src/core/GraphMembershipTypes.ts",
       "reason": "Type-only graph membership shapes named by shared config types. Erased at runtime with no imports."
     },

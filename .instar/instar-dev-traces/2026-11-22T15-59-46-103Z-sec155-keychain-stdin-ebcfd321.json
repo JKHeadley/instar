@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "sec155-keychain-stdin",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-22T15:59:46.103Z",
+  "artifactPath": "upgrades/side-effects/sec155-keychain-stdin.md",
+  "artifactSha256": "0de94fccf154094efc13d978bb83c6384672323039aced086b56b6fdb0d57067",
+  "coveredFiles": [
+    "docs/specs/sec155-keychain-stdin.eli16.md",
+    "scripts/lint-no-unfunneled-credential-write.js",
+    "src/core/CredentialSwapExecutor.ts",
+    "src/core/GlobalSecretStore.ts",
+    "src/core/OAuthRefresher.ts",
+    "src/core/SecretStore.ts",
+    "src/core/WorktreeKeyVault.ts",
+    "src/core/keychainStdinWrite.ts",
+    "src/data/stageBCertifiedSet.ts",
+    "src/monitoring/CredentialProvider.ts",
+    "src/remediation/RemediationKeyVault.ts",
+    "tests/unit/global-secret-store.test.ts",
+    "tests/unit/lint-no-unfunneled-credential-write.test.ts",
+    "tests/unit/sec155-keychain-stdin.test.ts",
+    "upgrades/next/sec155-keychain-stdin.md",
+    "upgrades/side-effects/sec155-keychain-stdin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-155: keychain writes move from argv (-w) to security -i stdin with a 4096-byte line guard; same stored bytes, same failure semantics; one shared helper, seven call sites; Stage-B exclusion for the helper; reversible by revert; two independent review rounds.",
+  "eli16Path": "docs/specs/sec155-keychain-stdin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec155-keychain-stdin.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the same single keychain write per call; no retry, schedule or loop added"
+  }
+}

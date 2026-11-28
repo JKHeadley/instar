@@ -49,6 +49,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { CredentialWriteFunnel, credentialWriteFunnel } from './CredentialWriteFunnel.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
+import { keychainWriteAsync, keychainWriteSync } from './keychainStdinWrite.js';
 
 /** Promisified async exec for the non-blocking keychain read (mirrors the sync `security` spawn). */
 const execFileAsync = promisify(execFile);
@@ -274,18 +275,9 @@ export const defaultCredentialStore: CredentialStore = {
   write(configHome: string, rawJson: string): boolean {
     if (process.platform === 'darwin') {
       try {
-        execFileSync(
-          'security',
-          [
-            'add-generic-password',
-            '-U', // update the existing entry in place
-            '-a',
-            claudeKeychainAccount(),
-            '-s',
-            claudeCredentialService(configHome),
-            '-w',
-            rawJson,
-          ],
+        // SEC-155: on standard input, never on the command line (`-U` updates the entry in place).
+        keychainWriteSync(
+          { account: claudeKeychainAccount(), service: claudeCredentialService(configHome), secret: rawJson, update: true },
           { stdio: ['ignore', 'ignore', 'ignore'], timeout: KEYCHAIN_TIMEOUT_MS },
         );
         return true;
@@ -311,18 +303,9 @@ export const defaultCredentialStore: CredentialStore = {
   async writeAsync(configHome: string, rawJson: string): Promise<boolean> {
     if (process.platform === 'darwin') {
       try {
-        await execFileAsync(
-          'security',
-          [
-            'add-generic-password',
-            '-U', // update the existing entry in place
-            '-a',
-            claudeKeychainAccount(),
-            '-s',
-            claudeCredentialService(configHome),
-            '-w',
-            rawJson,
-          ],
+        // SEC-155: on standard input, never on the command line (`-U` updates the entry in place).
+        await keychainWriteAsync(
+          { account: claudeKeychainAccount(), service: claudeCredentialService(configHome), secret: rawJson, update: true },
           { timeout: KEYCHAIN_TIMEOUT_MS },
         );
         return true;

@@ -337,7 +337,15 @@ describe('GlobalSecretStore keychain generation guard', () => {
           return found.toString('base64');
         }
         if (a[0] === 'delete-generic-password') { entries.delete(account); return ''; }
-        if (a[0] === 'add-generic-password') { entries.set(account, Buffer.from(a[a.indexOf('-w') + 1], 'base64')); return ''; }
+        // SEC-155: the write arrives as `security -i` with the command on standard input, the secret hex-encoded.
+        if (a[0] === '-i') {
+          const line = String(opts?.input ?? '');
+          const m = /^add-generic-password(?: -U)? -a "([^"]*)" -s "[^"]*" -X "([0-9a-f]*)"\n$/.exec(line);
+          if (!m) throw new Error(`unsupported -i input: ${line}`);
+          entries.set(m[1]!, Buffer.from(Buffer.from(m[2]!, 'hex').toString('utf8'), 'base64'));
+          return '';
+        }
+        if (a[0] === 'add-generic-password') throw new Error('SEC-155: a keychain write must never carry the secret as an argument');
         throw new Error(`unsupported op: ${a[0]}`);
       }
       if (cmd === 'secret-tool') {

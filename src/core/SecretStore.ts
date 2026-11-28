@@ -22,6 +22,7 @@ import {durableStamp,isDurablyUnchanged,rememberDurable} from './GraphDurableFil
 import { execFileSync } from 'node:child_process';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { keychainWriteSync } from './keychainStdinWrite.js';
 
 /** Opt-in durability barrier for callers that publish cryptographic receipts.
  * It never creates a key, changes keychain enrollment or silently ignores I/O. */
@@ -309,12 +310,8 @@ export class MasterKeyManager {
         } catch {
           // @silent-fallback-ok — entry may not exist
         }
-        execFileSync('security', [
-          'add-generic-password',
-          '-s', service,
-          '-a', account,
-          '-w', key.toString('base64'),
-        ], { stdio: 'pipe', timeout: 5000 });
+        // SEC-155: the master key goes on standard input, never on the command line.
+        keychainWriteSync({ account, service, secret: key.toString('base64') }, { stdio: 'pipe', timeout: 5000 });
         return true;
       } catch {
         // Child-process errors can include credential-bearing arguments or output.

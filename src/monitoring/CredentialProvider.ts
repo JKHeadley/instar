@@ -19,6 +19,7 @@ import {
   type FunnelResult,
 } from '../core/CredentialWriteFunnel.js';
 import { credentialSlotKey, claudeKeychainAccount, readClaudeKeychainItem, readClaudeKeychainItemSync } from '../core/OAuthRefresher.js';
+import { keychainWriteSync } from '../core/keychainStdinWrite.js';
 
 // ── Interfaces ──────────────────────────────────────────────────────
 
@@ -144,14 +145,12 @@ export class KeychainCredentialProvider implements CredentialProvider {
       },
     };
 
-    const jsonStr = JSON.stringify(newData);
-    const hexStr = Buffer.from(jsonStr).toString('hex');
-    execFileSync('security', ['-i'], {
-      input: `add-generic-password -U -a "${this.keychainAccount}" -s "${KEYCHAIN_SERVICE}" -X "${hexStr}"\n`,
-      encoding: 'utf-8',
-      timeout: 10000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    // SEC-155: the shared stdin writer, which also refuses a line too long for `security -i` to read
+    // whole (a longer one would store a truncated credential over the real one).
+    keychainWriteSync(
+      { account: this.keychainAccount, service: KEYCHAIN_SERVICE, secret: JSON.stringify(newData), update: true },
+      { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 },
+    );
   }
 
   async deleteCredentials(_email: string): Promise<void> {

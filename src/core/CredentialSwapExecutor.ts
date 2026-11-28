@@ -69,6 +69,7 @@ import type { CredentialWriteFunnel } from './CredentialWriteFunnel.js';
 import type { CredentialLocationLedger } from './CredentialLocationLedger.js';
 import { redactToken } from '../monitoring/CredentialProvider.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { keychainWriteAsync } from './keychainStdinWrite.js';
 
 const SECURITY_CALL_TIMEOUT_MS = 10_000;
 /** Disjoint from every `claudeCredentialService(home)` output (`Claude Code-credentials[-<8hex>]`). */
@@ -105,18 +106,8 @@ export const defaultKeychainExec: KeychainCredentialExec = {
     return readClaudeKeychainItem(service, SECURITY_CALL_TIMEOUT_MS);
   },
   writeService(service: string, rawJson: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      try {
-        execFile(
-          'security',
-          ['add-generic-password', '-U', '-a', claudeKeychainAccount(), '-s', service, '-w', rawJson],
-          { timeout: SECURITY_CALL_TIMEOUT_MS },
-          (err) => (err ? reject(err) : resolve()),
-        );
-      } catch (err) {
-        reject(err as Error);
-      }
-    });
+    // SEC-155: the credential goes to `security -i` on standard input, never on the command line.
+    return keychainWriteAsync({ account: claudeKeychainAccount(), service, secret: rawJson, update: true }, { timeout: SECURITY_CALL_TIMEOUT_MS });
   },
   deleteService(service: string): Promise<void> {
     return new Promise((resolve) => {
