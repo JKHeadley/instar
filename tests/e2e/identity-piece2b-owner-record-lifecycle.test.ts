@@ -79,7 +79,7 @@ describe('owner record lifecycle (production wiring)', () => {
     const sync = ownerRecordWiring.startOwnerRecordSync({ config: cfg as never, identity, selfMachineId: identity.loadIdentity().machineId, send: async (_m, cmd) => { sent.push(cmd); return { ok: false }; }, leaseHolder: () => null, splitBrain: () => false, degrade: () => {} });
     (identity as unknown as { getActiveMachines: () => Array<{ machineId: string }> }).getActiveMachines = () => [{ machineId: 'm_peer' }];
     await sync!.tick();
-    expect(sent[0]).toMatchObject({ type: 'owner-record-pull', build: expect.any(String), guards: [] });
+    expect(sent[0]).toMatchObject({ type: 'owner-record-pull', build: expect.any(String), guards: ['fence-lease', 'fence-routing', 'approver-record'] }); // piece 2d's live guards
     const server = new AgentServer({ config: cfg, sessionManager: createMockSessionManager() as never, state: new StateManager(cfg.stateDir), ownerRecord: ownerRecordWiring.ownerRecordRouteDeps });
     const r = await request(server.getApp()).get('/owner-record').set({ Authorization: `Bearer ${AUTH}` });
     expect(r.body.fence).toMatchObject({ inForce: null, selfBuild: expect.any(String) });

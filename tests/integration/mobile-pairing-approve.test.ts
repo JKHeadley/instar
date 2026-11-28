@@ -16,6 +16,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-approve.example.dev';
 const SESSION = 'operator-session-token';
@@ -88,7 +89,7 @@ async function ownerPhone(ctx: Ctx, opts: { presence?: boolean } = {}) {
   const p = await waiting(ctx);
   expect(ctx.svc.approvePending(p.deviceId, 'dashboard-pin')).toBe('approved');
   const presence = makeDevice();
-  if (opts.presence !== false) expect(ctx.svc.devices.setPresenceKey(p.deviceId, presence.publicKey)).toBe('set');
+  if (opts.presence !== false) expect(markApproverForTest(ctx.svc, p.deviceId, presence.publicKey)).toBe('set');
   return { ...p, presence };
 }
 async function faceId(ctx: Ctx, phone: Awaited<ReturnType<typeof ownerPhone>>, id: string, action: 'approve' | 'decline', fingerprint: string) {
@@ -400,8 +401,8 @@ describe('an owner phone, with Face ID', () => {
     const phone = await ownerPhone(ctx, { presence: false });
     const w = await waiting(ctx);
     const c = await signed(ctx.app, phone.dev, phone.deviceId, 'POST', path_(w.deviceId, 'challenge'), { action: 'approve' });
-    expect(c.status).toBe(409);
-    expect(c.body.error).toBe('presence-key-missing');
+    expect(c.status).toBe(403);
+    expect(c.body.error).toBe('approver-required');
   });
 
   it('a device signature alone, a bad presence signature, or a replayed challenge approves nothing', async () => {

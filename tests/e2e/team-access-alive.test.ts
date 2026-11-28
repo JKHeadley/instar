@@ -20,6 +20,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-team-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -95,7 +96,7 @@ describe('team access — production wiring', () => {
     const ownerCode = /is (\d{3}) (\d{3})\./.exec(dms[0]!)!.slice(1).join('');
     expect((await owner('POST', '/mobile/device/confirm', { code: ownerCode })).body.status).toBe('active');
 
-    server.mobilePairing!.devices.setPresenceKey(r.body.deviceId, makeDevice().publicKey);
+    markApproverForTest(server.mobilePairing!, r.body.deviceId, makeDevice().publicKey);
     const shared = (await owner('POST', '/mobile/conversations', { title: 'Client work', requestId: rid() })).body.conversationKey as string;
     const secret = (await owner('POST', '/mobile/conversations', { title: 'My notes', requestId: rid() })).body.conversationKey as string;
     expect(shared).toBeTruthy();

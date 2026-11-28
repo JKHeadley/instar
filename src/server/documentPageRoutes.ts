@@ -29,7 +29,7 @@ import { isDocumentsEnabled, resolveCaller, type DocumentRouteDeps } from './doc
 import type { Principal } from '../documents/access.js';
 import { canonicalJson } from '../documents/chain.js';
 import { ActionChallengeStore, permissionPresenceMessage } from './mobilePermissionsRoutes.js';
-import { verifyPresenceSignature } from './mobileConsoleTicket.js';
+import { approverSigRefusal } from './mobileApprover.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import { ownLoopbackHost } from './documentLinkRoutes.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
@@ -90,7 +90,8 @@ export interface DocPageDeps extends DocumentRouteDeps {
   /** Was this primary conversation removed? (§3.7: the page says so and Send is disabled with that reason) */
   conversationRemoved?: (ref: string) => boolean;
   /** The owner's active phone behind this device-signed request: its presence (Face ID) key and signed Host. */
-  ownerPresence?: (req: Request, deviceId: string) => { presenceKey: string; host: string } | null;
+  /** identity-security piece 3a: the approving device's host, and a check of its presence signature through the one approver reader. */
+  ownerPresence?: (req: Request, deviceId: string) => { host: string; verify: (message: string, sig: unknown) => import('./mobileApprover.js').ApproverSigOutcome } | null;
   agentName?: () => string;
   ownerName?: () => string | null;
   /**
@@ -269,7 +270,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
   const moveChallenges = new ActionChallengeStore();
   const moveLine = (docId: string, primary: string, docDeps: unknown): string =>
     `docs-primary-set ${docId} ${primary} ${crypto.createHash('sha256').update(canonicalJson(docDeps ?? {})).digest('hex')}`;
-  const moveGate = (req: Request, res: Response): { deviceId: string; presenceKey: string; host: string; caller: Caller } | null => {
+  const moveGate = (req: Request, res: Response): { deviceId: string; host: string; verify: (message: string, sig: unknown) => import('./mobileApprover.js').ApproverSigOutcome; caller: Caller } | null => {
     if (off(res)) return null;
     res.setHeader('Cache-Control', 'no-store');
     const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal?.deviceId;
@@ -311,7 +312,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const body = req.body as { challenge?: unknown; presenceSig?: unknown };
     const line = moveLine(id, b.primary, b.docDeps);
     if (!moveChallenges.consume(body.challenge, g.deviceId, g.host, line)) { res.status(401).json({ error: 'challenge-invalid' }); return; }
-    if (!verifyPresenceSignature(g.presenceKey, permissionPresenceMessage(g.deviceId, g.host, String(body.challenge), line), body.presenceSig)) { res.status(401).json({ error: 'presence-invalid' }); return; }
+    { const v = g.verify(permissionPresenceMessage(g.deviceId, g.host, String(body.challenge), line), body.presenceSig); if (v !== 'ok') { const r = approverSigRefusal(v, 'presence-invalid'); res.status(r.status).json(r.body); return; } }
     // The row carries the phone's whole device-signed request (body: conversation, history, Face ID
     // challenge), so every machine verifies the move against the phone's replicated key (§3.2).
     const raw = (req as Request & { rawBody?: Buffer }).rawBody;
@@ -338,7 +339,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!(b.supersedes === null || b.supersedes === undefined || (typeof b.supersedes === 'string' && /^[^#\s]{1,200}#\d{1,15}$/.test(b.supersedes)))) return null;
     return { askId: b.askId as string, onVersion: b.onVersion as string, verdict: b.verdict, questionHash: b.questionHash, noteHash: b.noteHash, supersedes: (b.supersedes as string | null | undefined) ?? null };
   };
-  const decideGate = (req: Request, res: Response): { deviceId: string; presenceKey: string; host: string; caller: Caller; proof: 'telegram' | 'pin' } | null => {
+  const decideGate = (req: Request, res: Response): { deviceId: string; host: string; verify: (message: string, sig: unknown) => import('./mobileApprover.js').ApproverSigOutcome; caller: Caller; proof: 'telegram' | 'pin' } | null => {
     const g = moveGate(req, res);
     if (!g) return null;
     const proof = deps.decisionRoot?.(g.deviceId) ?? null;
@@ -407,7 +408,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const body = req.body as { challenge?: unknown; presenceSig?: unknown };
     const line = decideLine(id, b);
     if (!decideChallenges.consume(body.challenge, g.deviceId, g.host, line)) { res.status(401).json({ error: 'challenge-invalid' }); return; }
-    if (!verifyPresenceSignature(g.presenceKey, permissionPresenceMessage(g.deviceId, g.host, String(body.challenge), line), body.presenceSig)) { res.status(401).json({ error: 'presence-invalid' }); return; }
+    { const v = g.verify(permissionPresenceMessage(g.deviceId, g.host, String(body.challenge), line), body.presenceSig); if (v !== 'ok') { const r = approverSigRefusal(v, 'presence-invalid'); res.status(r.status).json(r.body); return; } }
     // The row carries the phone's whole device-signed request, so every machine re-verifies it (§3.2).
     const raw = (req as Request & { rawBody?: Buffer }).rawBody;
     const deviceKey = deps.device(g.deviceId)?.publicKey ?? null;

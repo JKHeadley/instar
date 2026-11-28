@@ -23,8 +23,14 @@ export const IDENTITY_LEVEL_MIN_BUILD: Readonly<Record<string, string | null>> =
 
 /** How long a peer's signed statement stays fresh: four full 6-hour backoff cycles of a pulling peer (§2). */
 export const BUILD_STATEMENT_FRESH_MS = 24 * 60 * 60 * 1000;
+/** Piece 2d §2: each updated machine takes the lease from a given below machine at most this often per day. */
+export const BELOW_FENCE_TAKEOVER_BUDGET = 3;
 
 export type PeerBuildState = 'confirmed' | 'below' | 'unconfirmed' | 'retired';
+
+const LEDGERS = new Map<string, PeerBuildLedger>();
+/** Tests: forget the shared ledger instances. */
+export function resetPeerBuildLedgersForTests(): void { LEDGERS.clear(); }
 
 export function isValidBuild(v: unknown): v is string {
   return typeof v === 'string' && versionAtLeast(v, '0.0.0');
@@ -56,7 +62,7 @@ export interface FenceInForce {
 }
 
 interface Observation { machineId: string; key: string; build: string | null; guards: string[]; at: number }
-interface LedgerFile { observations: Observation[]; lastVerifiedFence: string | null; lastNotice: { at: number; list: string } | null; createdAt: number }
+interface LedgerFile { observations: Observation[]; lastVerifiedFence: string | null; lastNotice: { at: number; list: string } | null; createdAt: number; takeovers?: Record<string, number[]> }
 
 /**
  * §2: each peer's last signed build statement, per registration, saved across restarts in a key-material path.
@@ -69,8 +75,13 @@ export class PeerBuildLedger {
     this.data = this.read();
   }
 
+  /** One shared instance per ledger file: several writers each holding their own copy would overwrite each
+   *  other's counts (piece 2d's takeover budget is the case that broke). */
   static at(stateDir: string, now?: () => number): PeerBuildLedger {
-    return new PeerBuildLedger(path.join(stateDir, 'state', 'owner-record', 'peer-builds.json'), now);
+    const file = path.join(stateDir, 'state', 'owner-record', 'peer-builds.json');
+    let l = LEDGERS.get(file);
+    if (!l) { l = new PeerBuildLedger(file, now); LEDGERS.set(file, l); }
+    return l;
   }
 
   /** Record a signed statement. `build` null means the peer pulled with no build field (a 2b-only build). */
@@ -127,6 +138,18 @@ export class PeerBuildLedger {
     return true;
   }
 
+  /** Piece 2d §2: takeovers of a below holder, at most TAKEOVER_BUDGET per machine per 24 hours. */
+  takeoverAllowed(machineId: string): boolean {
+    const recent = (this.data.takeovers?.[machineId] ?? []).filter((t) => this.now() - t < 24 * 60 * 60 * 1000);
+    return recent.length < BELOW_FENCE_TAKEOVER_BUDGET;
+  }
+  noteTakeover(machineId: string): void {
+    const all = this.data.takeovers ?? {};
+    all[machineId] = [...(all[machineId] ?? []).filter((t) => this.now() - t < 24 * 60 * 60 * 1000), this.now()];
+    this.data.takeovers = all;
+    this.write();
+  }
+
   /** The list emptied: forget the last notice, and say whether one was open (so it can be closed). */
   clearNoticeIfOpen(): boolean {
     if (!this.data.lastNotice) return false;
@@ -143,6 +166,7 @@ export class PeerBuildLedger {
         lastVerifiedFence: isValidBuild(d.lastVerifiedFence) ? d.lastVerifiedFence : null,
         lastNotice: d.lastNotice && typeof d.lastNotice.at === 'number' && typeof d.lastNotice.list === 'string' ? d.lastNotice : null,
         createdAt: typeof d.createdAt === 'number' ? d.createdAt : this.now(),
+        takeovers: d.takeovers && typeof d.takeovers === 'object' ? d.takeovers : {},
       };
     } catch { return { observations: [], lastVerifiedFence: null, lastNotice: null, createdAt: this.now() }; /* @silent-fallback-ok: absent or unreadable ledger starts empty; every peer reads unconfirmed, which refuses nothing and keeps readiness false */ }
   }

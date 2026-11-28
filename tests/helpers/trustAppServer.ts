@@ -22,6 +22,7 @@ import { createTrustJourneyRuntime } from '../../src/core/trustJourney/TrustJour
 import { makeDevice } from './mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { allowTestIdentities } from './allow-test-identities.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-trust-app.example.dev';
 /** The loopback address a local (Mac app) device is bound to. */
@@ -101,6 +102,7 @@ export async function bootTrustAppServer(
       return raw ? r.send(raw.toString()) : r;
     };
     expect((await signed('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
+    markApproverForTest(server.mobilePairing!, id, presence.publicKey); // piece 3a: the route stores a key only for an approver
     expect((await signed('POST', '/mobile/device/presence-key', { publicKey: presence.publicKey, proof: presence.sign(presenceEnrollMessage(id, HOST, presence.publicKey)) })).status).toBe(200);
     if (opts.local) {
       // As the Mac app's local pairing records it (mac-app-creates-agent §A).

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece3a-approver-in-owner-record",
+  "sessionId": "cbc625bf-a039-4c78-b762-e62f28313a67",
+  "timestamp": "2026-11-21T21:11:12.148Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece3a-approver-in-owner-record.md",
+  "artifactSha256": "c0e8bb1e5b021c19ec9bfa0304e6a05746c0176ae8a0f60f8225848065172915",
+  "specPath": "docs/specs/identity-security-piece3a-approver-in-owner-record.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/mobileApproverClaim.ts",
+    "tests/unit/identity-piece3a-approver-claim.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "bug fix inside the approved 3a spec: the code message's Decline button was handled by nothing",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

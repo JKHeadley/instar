@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-21T20:25:25.337Z",
+  "slug": "identity-security-piece3a-approver-in-owner-record",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileApproverClaim.ts",
+      "src/server/mobileApproverGrant.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

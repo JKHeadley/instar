@@ -16,6 +16,7 @@
  * Part of Phase 1-6 of the multi-machine spec.
  */
 
+import { pinOwnerRecordGenesisAtJoin } from '../core/ownerRecordStore.js';
 import { standInEverUsed } from '../server/throwawayOwnerChat.js';
 import { TEAM_ENFORCEMENT_VERSION } from '../core/TeamAccessSync.js';
 import { getInstarVersion } from '../core/Config.js';
@@ -814,6 +815,15 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         // use a distinct agent-wide bearer conveyed only inside this
         // code-authenticated pairing response, so peers with different local API
         // tokens can still perform the recovery protocol.
+        // identity-security piece 3a §2: pin the inviting machine's owner-record genesis at once.
+        const ownerRecordGenesis = (result as { ownerRecordGenesis?: unknown }).ownerRecordGenesis;
+        if (typeof ownerRecordGenesis === 'string') {
+          try {
+            pinOwnerRecordGenesisAtJoin(config.stateDir, config.projectName ?? 'agent', ownerRecordGenesis);
+          } catch (err) {
+            console.log(pc.yellow(`  Could not save the ownership record's start: ${err instanceof Error ? err.message : String(err)}. This computer will learn it from the others.`));
+          }
+        }
         // The agent's owner introducers travel with its identity (mobile-pairing-introducer §6).
         if (Array.isArray((result as { ownerIntroducers?: unknown }).ownerIntroducers)) {
           try {

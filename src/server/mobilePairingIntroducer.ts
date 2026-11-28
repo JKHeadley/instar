@@ -13,6 +13,7 @@
  *
  * Everything here is machine-local and in memory except the introducer's audit file.
  */
+import { APPROVER_REQUIRED, approverPresenceKey, approverSigRefusal, mayApprove, verifyApproverPresence } from './mobileApprover.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -227,7 +228,7 @@ export function mountIntroducerRoutes(router: Router, svc: MobilePairingService,
   router.post('/mobile/introductions/challenge', (req: Request, res: Response) => {
     const approver = gate(req, res);
     if (!approver) return;
-    if (!svc.devices.get(approver)?.presenceKey) { res.status(409).json({ error: 'presence-key-missing' }); return; }
+    if (!mayApprove(svc, approver)) { res.status(403).json(APPROVER_REQUIRED); return; } // piece 3a
     const t = target(req.body);
     if (!t) { res.status(400).json({ error: 'bad-target', detail: 'audienceHost, deviceId and fingerprint are required.' }); return; }
     if (!identity()) { res.status(404).json({ error: 'no-identity', detail: 'This agent has no identity key yet, so it cannot vouch for phones.' }); return; }
@@ -238,8 +239,8 @@ export function mountIntroducerRoutes(router: Router, svc: MobilePairingService,
   router.post('/mobile/introductions', (req: Request, res: Response) => {
     const approver = gate(req, res);
     if (!approver) return;
-    const key = svc.devices.get(approver)?.presenceKey;
-    if (!key) { res.status(409).json({ error: 'presence-key-missing' }); return; }
+    const key = approverPresenceKey(svc, approver);
+    if (!key) { res.status(403).json(APPROVER_REQUIRED); return; }
     const t = target(req.body);
     if (!t) { res.status(400).json({ error: 'bad-target', detail: 'audienceHost, deviceId and fingerprint are required.' }); return; }
     const b = (req.body ?? {}) as Record<string, unknown>;
@@ -251,9 +252,11 @@ export function mountIntroducerRoutes(router: Router, svc: MobilePairingService,
       res.status(401).json({ error: 'challenge-invalid' });
       return;
     }
-    if (!verifyPresenceSignature(key, introducePresenceMessage(approver, host, b.challenge as string, line), b.presenceSig)) {
+    const presenceCheck = verifyApproverPresence(svc, approver, introducePresenceMessage(approver, host, b.challenge as string, line), b.presenceSig); // identity-security piece 3a: the one reader
+    if (presenceCheck !== 'ok') {
+      const presenceRefusal = approverSigRefusal(presenceCheck, 'presence-invalid');
       featureEvidence.record('mobilePairing', { kind: 'held', reason: 'introduction refused: presence-invalid', context: { approver } });
-      res.status(401).json({ error: 'presence-invalid' });
+      res.status(presenceRefusal.status).json(presenceRefusal.body);
       return;
     }
     const id = identity();

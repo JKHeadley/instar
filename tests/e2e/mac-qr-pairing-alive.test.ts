@@ -20,6 +20,7 @@ import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { pairingApproveLine, pairingApproveMessage } from '../../src/server/mobilePairingApproval.js';
 import { ensureLifelineIngressSecret, LIFELINE_SECRET_HEADER } from '../../src/core/LifelineIngressSecret.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-macqr-e2e.example.dev';
 const PIN = '482913';
@@ -88,7 +89,7 @@ describe('Pair a computer from an owner phone — production wiring', () => {
     const phone = await redeemNew(app);
     expect(mp.approvePending(phone.deviceId, 'dashboard-pin')).toBe('approved');
     const presence = makeDevice();
-    expect(mp.devices.setPresenceKey(phone.deviceId, presence.publicKey)).toBe('set');
+    expect(markApproverForTest(mp, phone.deviceId, presence.publicKey)).toBe('set');
 
     const mac = makeDevice();
     const m = await send(app, phone.dev, phone.deviceId, 'POST', '/mobile/pairing-codes', { forDevice: { publicKey: mac.publicKey, name: 'Studio Mac' } });

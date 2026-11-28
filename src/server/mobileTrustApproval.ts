@@ -4,6 +4,7 @@
  * mobilePermissionsRoutes.ts use. The routes own the write gate and the presence proof; the account
  * path service owns every decision.
  */
+import { approverPresenceKey, mayApprove, APPROVER_REQUIRED } from './mobileApprover.js';
 import type { Request } from 'express';
 import type { AccountPathService, DeviceDirectory, DeviceSnapshot } from '../core/trustJourney/AccountPathService.js';
 import type { TrustAccountPathRuntime } from '../core/trustJourney/TrustJourneyRuntime.js';
@@ -47,7 +48,7 @@ export function deviceSnapshot(svc: MobilePairingService | null, deviceId: strin
     // Through the one device-key reader (browser-device §4.1); a browser is never an approving device (activeOwnerPhone).
     // E2E-PAIRING: EXEMPT — reads the same key through deviceKeyOf (refactor); tests/e2e/trust-app-approval-alive.test.ts covers these routes.
     keyFingerprint: deviceKeyOf(d) ? (d.fingerprint ?? deviceFingerprint(deviceKeyOf(d)!)) : null,
-    presenceKeyHash: d.presenceKey ? keyHashOf(d.presenceKey) : null,
+    presenceKeyHash: (() => { const k = svc ? approverPresenceKey(svc, d.id) : null; return k ? keyHashOf(k) : null; })(), // piece 3a
     deviceKind: d.deviceKind === 'computer' ? 'computer' : 'phone',
     localInstall: pairedLocally(d),
     firstPairing: pairedLocally(d) || (typeof d.approvedBy === 'string' && pairedLocally(svc.devices.get(d.approvedBy))),

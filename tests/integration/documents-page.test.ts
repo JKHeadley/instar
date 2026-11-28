@@ -24,6 +24,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import type { TeamView } from '../../src/documents/access.js';
 import { checkRowOrigin } from '../../src/documents/originCheck.js';
 import { deviceKeyHashOf } from '../../src/core/AppRecordSignatures.js';
+import { verifyPresenceSignature } from '../../src/server/mobileConsoleTicket.js';
 
 const tmp: string[] = [];
 afterEach(() => { for (const d of tmp.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/documents-page.test.ts' }); });
@@ -72,7 +73,7 @@ function setup(markdown = '# Plan\n\nWe ship the viewer on Friday.\n') {
     isOwnHost: (h) => h === HOST, stableOrigin: () => origin, assetsDir: assets,
     // 'home-phone': an owner phone with a presence key that the production lookup answers null for
     // (identity A4: paired on the home address, or let in at the computer).
-    ownerPresence: (_req, id) => id === 'owner-phone' || id === 'home-phone' ? { presenceKey: presence.raw, host: HOST } : null,
+    ownerPresence: (_req, id) => id === 'owner-phone' || id === 'home-phone' ? { host: HOST, verify: (m: string, sig: unknown) => (verifyPresenceSignature(presence.raw, m, sig) ? 'ok' : 'bad-signature') } : null,
   };
   const a = express();
   a.use(express.json({ limit: '2mb', verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = Buffer.from(buf); } }));

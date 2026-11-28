@@ -24,6 +24,7 @@ import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-team-sw.example.dev';
 const servers: AgentServer[] = [];
@@ -134,7 +135,7 @@ describe('team settings turn on for the whole agent', () => {
     const ownerCode = /is (\d{3}) (\d{3})\./.exec(A.dms[0]!)!.slice(1).join('');
     expect((await owner('POST', '/mobile/device/confirm', { code: ownerCode })).body.status).toBe('active');
     const presence = makeDevice();
-    A.server.mobilePairing!.devices.setPresenceKey(r.body.deviceId, presence.publicKey);
+    markApproverForTest(A.server.mobilePairing!, r.body.deviceId, presence.publicKey);
 
     // Before: the context gives one line for memory privacy, counting the Studio itself.
     const before = await owner('GET', '/mobile/team/context');

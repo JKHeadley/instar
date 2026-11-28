@@ -22,6 +22,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../../src/monitoring/FeatureEvidenceLog.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo.example.dev';
 const HASH = 'b'.repeat(64);
@@ -86,7 +87,7 @@ function setup(cfg: Record<string, unknown> = {}) {
     const created = svc.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST, ...(person ?? {}) });
     if (!created.ok) throw new Error('setup');
     svc.devices.applyConfirm(created.device.id, { ok: true });
-    if (withPresence) svc.devices.setPresenceKey(created.device.id, presence.publicKey);
+    if (withPresence) markApproverForTest(svc, created.device.id, presence.publicKey);
     return { dev, presence, id: created.device.id };
   };
   return { app, svc, calls, pair, dir, config, hold };
@@ -283,7 +284,7 @@ describe('writes: refusals', () => {
     expect((await send(c.app, msp, 'POST', '/mobile/permissions/challenge', { action: 'approve-request', target: 'authreq-1', proposalHash: HASH })).status).toBe(403);
     const bare = c.pair(undefined, false);
     const m = await send(c.app, bare, 'POST', '/mobile/permissions/challenge', { action: 'approve-request', target: 'authreq-1', proposalHash: HASH });
-    expect([m.status, m.body.error]).toEqual([409, 'presence-key-missing']);
+    expect([m.status, m.body.error]).toEqual([403, 'approver-required']);
     const lan = await send(c.app, c.pair(), 'POST', '/mobile/permissions/challenge', { action: 'approve-request', target: 'authreq-1', proposalHash: HASH }, { 'x-test-lan': '1' });
     expect([lan.status, lan.body.error]).toEqual([403, 'secure-transport-required']);
     const noPin = setup({ dashboardPin: undefined });
@@ -295,7 +296,7 @@ describe('writes: refusals', () => {
     expect(c.calls).toHaveLength(0);
     // Every route refusal left a row (the bearer's with no device id).
     const rows = auditRows(c.dir).filter((x) => x.event === 'refused');
-    expect(rows.map((x) => x.reason)).toEqual(expect.arrayContaining(['device-signature-required', 'presence-key-missing', 'secure-transport-required']));
+    expect(rows.map((x) => x.reason)).toEqual(expect.arrayContaining(['device-signature-required', 'approver-required', 'secure-transport-required']));
     expect(rows.find((x) => x.reason === 'device-signature-required').deviceId).toBeNull();
   });
   it('a phone removed after its challenge cannot use it; the feature switched off stops a queued switch', async () => {
@@ -408,8 +409,8 @@ describe('asking for a key and cancelling a request (docs/specs/mobile-native-se
     expect((await send(c.app, msp, 'POST', cancelPath, {})).status).toBe(403);
     const noKey = c.pair(undefined, false);
     const nk = await send(c.app, noKey, 'POST', '/mobile/secrets/requests', askBody);
-    expect(nk.status).toBe(409);
-    expect(nk.body.error).toBe('presence-key-missing');
+    expect(nk.status).toBe(403);
+    expect(nk.body.error).toBe('approver-required');
     const gone = c.pair();
     c.svc.devices.revoke(gone.id, new Date().toISOString());
     expect((await send(c.app, gone, 'POST', '/mobile/secrets/requests', askBody)).status).toBe(401);

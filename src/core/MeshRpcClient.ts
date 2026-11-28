@@ -12,6 +12,7 @@
  */
 
 import type { MeshCommand, MeshEnvelope } from './MeshRpc.js';
+import { meshFenceRefusesTo } from './meshVerbFenceClass.js';
 import { signEnvelope } from './MeshRpc.js';
 
 export interface MeshPeer {
@@ -74,6 +75,9 @@ export class MeshRpcClient {
    * on every cold tunnel hop (live-matrix finding T1, 2026-06-06).
    */
   async send(peer: MeshPeer, command: MeshCommand, epoch: number, opts?: { timeoutMs?: number }): Promise<MeshRpcClientResult> {
+    // identity-security piece 2d §2b: no work or authority verb goes to a machine below the minimum build.
+    const fenced = meshFenceRefusesTo(peer.machineId, command);
+    if (fenced) return { status: 409, ok: false, reason: fenced };
     const env = this.buildEnvelope(peer, command, epoch);
     const fetchFn = this.d.fetchFn ?? ((url, init) => fetch(url, init as RequestInit) as unknown as Promise<{ status: number; json: () => Promise<unknown> }>);
     const timeoutMs = opts?.timeoutMs ?? this.d.timeoutMs ?? 5000;

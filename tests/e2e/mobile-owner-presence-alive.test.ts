@@ -23,6 +23,7 @@ import { ownerPresenceMessage, DESKTOP_UNLOCK_VERSION, PIN_REVEAL_VERSION } from
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { allowTestIdentities } from '../helpers/allow-test-identities.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-owner-presence-e2e.example.dev';
 const PIN = '424242';
@@ -84,6 +85,7 @@ async function boot(developmentAgent: boolean) {
     return raw ? r.send(raw.toString()) : r;
   };
   expect((await signed('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
+  markApproverForTest(server.mobilePairing!, deviceId, presence.publicKey); // piece 3a: the route stores a key only for an approver
   expect((await signed('POST', '/mobile/device/presence-key', { publicKey: presence.publicKey, proof: presence.sign(presenceEnrollMessage(deviceId, HOST, presence.publicKey)) })).status).toBe(200);
   return { app, bearer, signed, presence, deviceId, dms };
 }

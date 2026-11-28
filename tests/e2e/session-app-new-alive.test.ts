@@ -33,6 +33,7 @@ import { TopicProfileResolver } from '../../src/core/TopicProfileResolver.js';
 import { TopicProfileWriteSurface } from '../../src/core/topicProfileWriteSurface.js';
 import { ProfileConfirmSlots } from '../../src/core/topicProfileIngress.js';
 import { createAppSessionStarter } from '../../src/core/appInboundDispatch.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 const HOST = 'echo-app-new-e2e.example.dev';
 const PIN = '424242';
 const servers: AgentServer[] = [];
@@ -156,6 +157,7 @@ describe('a New session with its own app conversation — production wiring', ()
       return raw ? r.send(raw.toString()) : r;
     };
     expect((await signed('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
+    markApproverForTest(server.mobilePairing!, deviceId, presence.publicKey); // piece 3a: the route stores a key only for an approver
     expect((await signed('POST', '/mobile/device/presence-key', { publicKey: presence.publicKey, proof: presence.sign(presenceEnrollMessage(deviceId, HOST, presence.publicKey)) })).status).toBe(200);
 
     const act = async (issue: Record<string, unknown>, route: string, body: Record<string, unknown>) => {

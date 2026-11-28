@@ -9,6 +9,10 @@ import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
 import { projectTitlesByTopic, topicDisplayName } from './conversationFallbackTitle.js';
 import { orgDecisionJournal } from '../core/OrgActionCheck.js';
+import { isApproverRevokeNonce, takeApproverRevokeTap } from './mobileApproverRevoke.js';
+import { setOwnerRecordApproverHooks } from '../core/ownerRecordWiring.js';
+import { approverClaimLive, declineApproverClaimTap, isApproverClaimNonce, unvouchedOwnerDevices } from './mobileApproverClaim.js';
+import { approverPresenceKey, ensureApproverMigration, setKeptDevicesNotice, mayApprove, mergeRetiredKeys, readApproverState, retiredKeyHashes, tightenApproverCutoff, verifyApproverPresence } from './mobileApprover.js';
 import { bootReadiness } from './BootReadiness.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
@@ -2736,6 +2740,38 @@ export class AgentServer {
       });
       svc.sameNetwork = listener;
     }
+    // identity-security piece 3a §5 and §3: keep the devices that approve today (mobile-approver-mark §3.6, once),
+    // and tell the owner-record sync about unvouched devices and a live first-approver claim.
+    {
+      const mp = this.mobilePairing;
+      try {
+        setKeptDevicesNotice((svc, kept) => {
+          const names = kept.map((id) => { const d = svc.devices.get(id); return `${d?.label ?? d?.deviceName ?? 'A device'} (${d?.fingerprint ?? id})`; }).join(', ');
+          const text = `These devices could approve changes before this update and still can: ${names}. If you don't recognise one, remove it from your devices.`;
+          void options.telegram?.createAttentionItem({ id: 'approver:kept-devices', title: 'Devices that can approve changes', summary: text, description: text, priority: 'NORMAL', category: 'security', sourceContext: 'mobile-approver' } as Parameters<NonNullable<typeof options.telegram>['createAttentionItem']>[0]).catch(() => {
+            // @silent-fallback-ok — the list is also on the devices page; the migration itself is done
+          });
+        });
+        ensureApproverMigration(mp);
+      } catch (err) {
+        DegradationReporter.getInstance().report({ feature: 'MobileApprover.migration', primary: 'keep the devices that approved before this update', fallback: 'no kept devices on this computer until the next start', reason: err instanceof Error ? err.message : String(err), impact: 'A device that approved before may be refused until the next restart.' });
+      }
+      setOwnerRecordApproverHooks({
+        approverFacts: () => ({ unvouched: unvouchedOwnerDevices(mp).length, migratedAt: readApproverState(mp.deps.stateDir).migration?.at ?? null, retired: retiredKeyHashes(mp.deps.stateDir) }),
+        peerRetired: (hashes) => { try { mergeRetiredKeys(mp.deps.stateDir, hashes); } catch (err) { DegradationReporter.getInstance().report({ feature: 'MobileApprover.retired', primary: 'stop accepting approval keys another computer retired', fallback: 'this computer keeps its own retired list', reason: err instanceof Error ? err.message : String(err), impact: 'A device removed on another computer may still approve here.' }); } },
+        claimLive: () => approverClaimLive(),
+        peerMigrations: (earliest, allAnswered) => {
+          const { dropped } = tightenApproverCutoff(mp, earliest, allAnswered);
+          if (dropped.length === 0) return;
+          // mobile-approver-mark §3.6: a mark removed by an earlier cutoff is announced (it only ever shrinks, so this is bounded).
+          const names = dropped.map((id) => { const d = mp.devices.get(id); return `${d?.label ?? d?.deviceName ?? 'A device'} (${d?.fingerprint ?? id})`; }).join(', ');
+          const text = `These devices can no longer approve changes, because they were set up after another of your computers updated: ${names}. Set them up again with a device that can approve.`;
+          void options.telegram?.createAttentionItem({ id: `approver:kept-dropped:${dropped.sort().join(',').slice(0, 80)}`, title: 'Devices that can no longer approve', summary: text, description: text, priority: 'NORMAL', category: 'security', sourceContext: 'mobile-approver' } as Parameters<NonNullable<typeof options.telegram>['createAttentionItem']>[0]).catch(() => {
+            // @silent-fallback-ok — the devices page shows who can approve; the removal itself is done
+          });
+        },
+      });
+    }
     // The published organization pack, read by joined agents' update checks (org-pack-and-join §B).
     mountPublicOrgPackRoutes(this.app, options.config.stateDir);
     // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
@@ -2790,7 +2826,7 @@ export class AgentServer {
         // Android (docs/specs/mobile-android-app.md §2.3): the Firebase service-account key, read before each send.
         fcmKey: () => pushKeys.get('fcm_service_account_json'),
         // An approval notice reaches an Android phone only when it can approve: active owner phone with a presence key.
-        canApprove: (deviceId) => { const d = mp.devices.get(deviceId); return !!d?.presenceKey && activeOwnerPhone(mp, deviceId); },
+        canApprove: (deviceId) => mayApprove(mp, deviceId), // identity-security piece 3a: the one approver reader
         fanOut: (t) => fanOutPushTrigger(mp.pushPoolCtx, t),
         reportDegradation: (what, err) => DegradationReporter.getInstance().report({
           feature: what, primary: 'send a push notification to a paired phone', fallback: "no push for this event; the item is still in the app and the agent's other channels",
@@ -2804,10 +2840,24 @@ export class AgentServer {
         // The tap's wording follows the device's kind (dashboard-conversations-browser-device §4.7),
         // read before the nonce is consumed.
         chat.mobileDeclineHandler = (nonce) => {
+          // identity-security piece 3a §3: "This wasn't me" on a first-approver code ends that claim.
+          if (isApproverClaimNonce(nonce)) return { result: 'declined' as const, text: declineApproverClaimTap(nonce).text };
+          // identity-security piece 3a §6: Decline on "remove an approving device" keeps it.
+          if (isApproverRevokeNonce(nonce)) { const t = takeApproverRevokeTap(mp, nonce, false, () => false); return { result: 'declined' as const, text: t.text }; }
           const client = mp.nonceClient(nonce);
           return { result: mp.declineByNonce(nonce), client };
         };
         chat.mobileApproveHandler = (nonce) => {
+          // identity-security piece 3a §6: Approve on "remove an approving device" removes it (ledger row first).
+          if (isApproverRevokeNonce(nonce)) {
+            const t = takeApproverRevokeTap(mp, nonce, true, (id) => {
+              const at = new Date().toISOString();
+              const d = mp.devices.get(id);
+              if (d && d.status !== 'revoked') { try { mp.keyLedger?.recordRevocation(d, at); } catch (err) { DegradationReporter.getInstance().report({ feature: 'MobilePairing.keyLedger', primary: 'record the revocation for every machine', fallback: 'boot reconciliation backfills it', reason: err instanceof Error ? err.message : String(err), impact: 'Other computers learn of the removal at their next start.' }); } }
+              return mp.devices.revoke(id, at);
+            });
+            return { outcome: 'other' as const, text: t.text };
+          }
           const client = mp.nonceClient(nonce);
           const outcome = mp.approveByNonce(nonce);
           return outcome === 'approved' ? { outcome, text: '', client }
@@ -11504,7 +11554,8 @@ export class AgentServer {
     const mayWrite = !(client === 'browser' && approvedVia === 'dashboard-pin') && scope !== 'documents-read' && !guest;
     // SEC-088 interim: only this machine's own, matching, active owner-phone enrollment yields the
     // Face ID key a decision row is re-checked with; replicated activation never does.
-    const localPresenceKey = local && localKey && deviceKeyHashOf(localKey) === keyHash && local.presenceKey && activeOwnerPhone(svc, deviceId) ? local.presenceKey : undefined;
+    const approverKey = local && localKey && deviceKeyHashOf(localKey) === keyHash ? approverPresenceKey(svc, deviceId) : null; // piece 3a
+    const localPresenceKey = approverKey ?? undefined;
     return { status: 'ok', publicKey, role, personKey, client, mayWrite, approvedVia, ...(localPresenceKey ? { localPresenceKey } : {}) };
   }
 
@@ -11603,7 +11654,8 @@ export class AgentServer {
     if (!svc) return null;
     return documentDecisionRootOf({
       device: (id) => svc.devices.get(id),
-      activeOwnerPhone: (id) => activeOwnerPhone(svc, id),
+      // piece 3a: only an approving device decides on a document.
+      activeOwnerPhone: (id) => activeOwnerPhone(svc, id) && mayApprove(svc, id),
       agentHasTelegramOwner: () => this.documentAgentHasTelegramOwner(),
     }, deviceId);
   }
@@ -11863,9 +11915,8 @@ export class AgentServer {
       stableOrigin: () => this.mobilePairing?.pairingOrigin()?.origin ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel) ?? null,
       ownerPresence: (req: import('express').Request, deviceId: string) => {
         const svc = this.mobilePairing;
-        if (!svc || !activeOwnerPhone(svc, deviceId)) return null;
-        const key = svc.devices.get(deviceId)?.presenceKey;
-        return key ? { presenceKey: key, host: signedHost(req, svc, deviceId) } : null;
+        if (!svc || !approverPresenceKey(svc, deviceId)) return null; // piece 3a
+        return { host: signedHost(req, svc, deviceId), verify: (message: string, sig: unknown) => verifyApproverPresence(svc, deviceId, message, sig) };
       },
       assetsDir: path.join(this.resolveDashboardDir(), 'docs'),
       personName: (personKey: string) => this.mobilePairing?.teamLog()?.state().people.get(personKey)?.name ?? null,

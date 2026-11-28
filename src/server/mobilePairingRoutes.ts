@@ -1,5 +1,9 @@
 import { recordMobileChatServingRefusal } from './mobileChatServingAudit.js';
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
+import { approverClaimDeviceId, dropApproverClaimFor, mountApproverClaimRoutes } from './mobileApproverClaim.js';
+import { askOwnerToRevokeApprover, isLastOwnerKey } from './mobileApproverRevoke.js';
+import { mountApproverGrantRoutes } from './mobileApproverGrant.js';
+import { mayApprove } from './mobileApprover.js';
 import { maskInbound } from '../messaging/inboundCredentialMask.js';
 import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { PairingOutcomeWatches, type SendResult as OutcomeSendResult, type OperationResult as OutcomeOperationResult } from '../core/PairingOutcomeWatches.js';
@@ -1136,7 +1140,7 @@ export class MobilePairingService {
 
   /** An owner phone able to answer on this machine right now: active, owner, presence key on file. */
   ownerPhoneCanApprove(): boolean {
-    return this.devices.list().some((d) => !!d.presenceKey && activeOwnerPhone(this, d.id));
+    return this.devices.list().some((d) => mayApprove(this, d.id)); // identity-security piece 3a
   }
 
   /** What a waiting phone is told (spec §3.5); nothing when the feature is off. */
@@ -2053,6 +2057,10 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
   // Console sign-in from an owner phone (docs/specs/mobile-console-device-signin.md).
   mountConsoleTicketDeviceRoutes(router, svc);
+  // identity-security piece 3a §3: the first approving device, by a code from the owner's private chat.
+  mountApproverClaimRoutes(router, svc);
+  // §4: giving the right to another device, signed by an approving device.
+  mountApproverGrantRoutes(router, svc);
 
   // Approve a waiting phone from an owner phone, with Face ID (mobile-pairing-approve §3.4).
   mountPairingApprovalDeviceRoutes(router, svc);
@@ -2085,6 +2093,21 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
         return;
       }
     }
+    // identity-security piece 3a §6: a device that can approve is removed only with the owner's yes in the
+    // private chat (a device removing itself excepted). The last one can't be removed until recovery exists.
+    if (requestedBy !== id && mayApprove(svc, id)) {
+      if (isLastOwnerKey(svc, id)) { res.status(409).json({ error: 'last-approver', detail: 'This is the only device that can approve changes. Add another one first: removing it would leave nothing able to approve.' }); return; }
+      const ask = await askOwnerToRevokeApprover(svc, id);
+      if (ask.kind === 'sent') { res.status(202).json({ pending: 'pending-owner-confirm', detail: 'This device approves changes, so the owner confirms removing it in their private chat. It keeps working until then.' }); return; }
+      if (ask.kind === 'no-private-chat') { res.status(409).json({ error: 'approver-signature-required', detail: 'This device approves changes. Remove it from another device that can approve.' }); return; }
+      res.status(503).json({ error: 'owner-notice-unavailable', detail: 'The confirmation could not be sent to the owner\'s private chat. Try again.' });
+      return;
+    }
+    // §3.3: a device that can't approve can't remove a device with a live first-approver claim.
+    if (requestedBy !== null && requestedBy !== id && approverClaimDeviceId() === id && !mayApprove(svc, requestedBy)) {
+      res.status(409).json({ error: 'approver-claim-live', detail: 'That device is being set up to approve right now.' });
+      return;
+    }
     let held: boolean;
     const revokedAt = new Date().toISOString();
     const existing = svc.keyLedger ? svc.devices.get(id) : null;
@@ -2103,6 +2126,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       res.status(500).json(storageErrorResponse({ error: 'Could not record the revocation. Try again.' }, svc.deps.stateDir));
       return;
     }
+    if (held) dropApproverClaimFor(id); // piece 3a: a revoked device's claim is dropped
     if (held) { svc.confirm.drop(id); featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'revoked here', context: { deviceId: id, by: p.kind, heldHere: true, ...(requestedBy && requestedBy !== id ? { requestedBy } : {}) } }); res.json({ revoked: true, machine: deps.selfMachineId ?? null }); return; }
     if (p.kind === 'device' || !poolCtx) { res.status(404).json({ error: 'unknown-device' }); return; }
     const r = await forwardRevoke(poolCtx, id);
@@ -2949,6 +2973,13 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/pairing-codes$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 6, bucket: 'pairing-mint' },
     { method: 'POST', re: new RegExp(`^/mobile/pairing-requests/${UUID}/(challenge|approve|decline)$`), statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'pairing-approve' },
     { method: 'POST', re: /^\/mobile\/device\/presence-key$/, statuses: active, body: 'json' },
+    // identity-security piece 3a §3: the first approver's claim, code and signature (owner devices; three a day).
+    { method: 'POST', re: /^\/mobile\/approver\/first(\/confirm|\/sign)?$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'approver-first' },
+    { method: 'POST', re: /^\/mobile\/approver\/(request|lookup|grant\/draft|grant\/sign|revoke\/draft|revoke\/sign)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'approver-grant' },
+    { method: 'POST', re: new RegExp(`^/mobile/approver/requests/${UUID}/decline$`), statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'approver-grant' },
+    { method: 'DELETE', re: /^\/mobile\/approver\/request$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 12, bucket: 'approver-grant' },
+    { method: 'GET', re: /^\/mobile\/approver\/requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'approver-grant-read' },
+    { method: 'GET', re: /^\/mobile\/approvers$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'approver-grant-read' },
     // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2-3.3). The
     // introducer routes re-check owner, local TLS and the switch; the waiting phone hands in its own.
     { method: 'GET', re: /^\/mobile\/introducer$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'introducer-read' },

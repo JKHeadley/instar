@@ -18,6 +18,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const A_HOST = 'echo-intro.example.dev';
 const N_HOST = 'pairtest-intro.example.dev';
@@ -93,7 +94,7 @@ async function ownerPhone(a: Agent, presence = true) {
   const p = await waiting(a);
   expect(a.svc.approvePending(p.deviceId, 'dashboard-pin')).toBe('approved');
   const key = makeDevice();
-  if (presence) expect(a.svc.devices.setPresenceKey(p.deviceId, key.publicKey)).toBe('set');
+  if (presence) expect(markApproverForTest(a.svc, p.deviceId, key.publicKey)).toBe('set');
   return { ...p, presence: key };
 }
 /** The app's flow on A: challenge, presence signature, introduction. */
@@ -138,7 +139,7 @@ describe('the introducer (agent A)', () => {
     const { A } = pair();
     const noKey = await ownerPhone(A, false);
     const t = { audienceHost: N_HOST, deviceId: '00000000-0000-4000-8000-000000000001', fingerprint: 'AAAA-BBBB-CCCC-DDDD' };
-    expect((await signed(A, noKey.dev, noKey.deviceId, 'POST', '/mobile/introductions/challenge', t)).body.error).toBe('presence-key-missing');
+    expect((await signed(A, noKey.dev, noKey.deviceId, 'POST', '/mobile/introductions/challenge', t)).body.error).toBe('approver-required');
     const phone = await ownerPhone(A);
     const c = await signed(A, phone.dev, phone.deviceId, 'POST', '/mobile/introductions/challenge', t);
     const wrong = phone.dev.sign(introducePresenceMessage(phone.deviceId, A_HOST, c.body.challenge, introduceLine(t.audienceHost, t.deviceId, t.fingerprint)));

@@ -24,6 +24,7 @@ import type { TrustAccountPathRuntime } from '../../src/core/trustJourney/TrustJ
 import { proposalHashOf, type OperatorProof } from '../../src/core/TrustRaiseGuard.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo.example.dev';
 /** A device the Mac app paired on this computer is reached only over loopback at its stored host (#3259 localBindingOk). */
@@ -78,7 +79,7 @@ function setup() {
     const created = svc.devices.createPending({ deviceName: opts.computer ? 'Mac' : 'iPhone', label: null, publicKey: dev.publicKey, host, ...(opts.computer ? { deviceKind: 'computer' as const } : {}) });
     if (!created.ok) throw new Error('setup');
     svc.devices.applyConfirm(created.device.id, { ok: true });
-    svc.devices.setPresenceKey(created.device.id, presence.publicKey);
+    markApproverForTest(svc, created.device.id, presence.publicKey);
     if (opts.local) {
       // As the Mac app's local pairing writes it (mac-app-creates-agent §A): approvedVia local-install with a local binding.
       const file = path.join(dir, 'state', 'mobile-devices.json');
@@ -265,7 +266,7 @@ describe('mobile trust approval routes', () => {
     expect(c.store.request(requestId)?.status).toBe('open');
   });
 
-  it('the local override: refused for a forwarded (remote) request; over loopback it replaces the key and the acceptance', async () => {
+  it('the local override: refused for a forwarded (remote) request; over loopback an approving device keeps its key (identity piece 3a)', async () => {
     const c = setup();
     const mac = c.pair({ local: true, computer: true });
     expect((await acceptSelf(c, mac)).res.status).toBe(200);
@@ -283,13 +284,11 @@ describe('mobile trust approval routes', () => {
     const pl = line('accept-device', phone.id, { keyFingerprint: phone.fp, disclosureHash: DHASH });
     const notLocal = await signedAct(c.app, phone, { action: 'accept-device', target: phone.id, keyFingerprint: phone.fp, disclosureHash: DHASH }, '/mobile/trust/device-acceptance', { ...body, target: phone.id, keyFingerprint: phone.fp, keyPolicy: 'userPresence' }, pl, fresh);
     expect(notLocal.res.status).toBe(403);
-    // Loopback, no forwarding header: the new key signs, the old one is revoked, the acceptance is replaced.
+    // Loopback, no forwarding header: identity-security piece 3a (mobile-approver-mark §3.5) refuses to replace an
+    // approving device's key, which would silently remove its right; the device is removed and set up again instead.
     const local = await signedAct(c.app, mac, { action: 'accept-device', target: mac.id, keyFingerprint: mac.fp, disclosureHash: DHASH }, '/mobile/trust/device-acceptance', body, ln, fresh);
-    expect(local.res.status, JSON.stringify(local.res.body)).toBe(200);
-    expect(local.res.body).toMatchObject({ status: 'recorded', via: 'local-override', withdrew: old.acceptanceId });
-    expect(c.svc.devices.get(mac.id)!.presenceKey).toBe(fresh.publicKey);
-    expect(c.store.deviceAcceptance(mac.id)).toMatchObject({ via: 'local-override', presenceKeyHash: keyHashOf(fresh.publicKey) });
-    const listed = await send(c.app, mac, 'GET', '/mobile/trust/requests');
-    expect(listed.body.approvals.record[0]).toMatchObject({ via: 'local-override', note: 'approval key replaced on this Mac' });
+    expect([local.res.status, local.res.body.error]).toEqual([409, 'approver-key-locked']);
+    expect(c.svc.devices.get(mac.id)!.presenceKey).toBe(mac.presence.publicKey);
+    expect(c.store.deviceAcceptance(mac.id)?.acceptanceId).toBe(old.acceptanceId);
   });
 });

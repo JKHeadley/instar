@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece2d-fence-lease-routing",
+  "sessionId": "cbc625bf-a039-4c78-b762-e62f28313a67",
+  "timestamp": "2026-11-21T19:32:17.161Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece2d-fence-lease-routing.md",
+  "artifactSha256": "094a98574bc453108e2dc396136b90a268fc30dd0728a47e871f01ce77e8323d",
+  "specPath": "docs/specs/identity-security-piece2d-fence-lease-routing.md",
+  "coveredFiles": [
+    "src/core/meshVerbFenceClass.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "rebase follow-up inside the approved 2d spec: classify six new mesh verbs in the exhaustive fence table",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}
