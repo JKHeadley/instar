@@ -60,6 +60,16 @@ describe('POST /agent-links', () => {
     expect((await request(app).post('/agent-links').send({ target: 'doc', ref: '../api' })).status).toBe(400);
     expect((await request(app).post('/agent-links').send({})).status).toBe(400);
   });
+  it('builds a strict card navigation reference', async () => {
+    const k = key(); write(path.join(dir, 'identity.json'), k);
+    const id = computeCanonicalId(k.pub);
+    const ref = 'wc_0123456789abcdef';
+    const r = await request(app).post('/agent-links').send({ target: 'card', ref });
+    expect(r.status).toBe(200);
+    expect(r.body.url).toBe(`https://instar.sh/a#v=1&i=${id}&t=card&r=${ref}`);
+    expect((await request(app).post('/agent-links').send({ target: 'card', ref: '../api' })).status).toBe(400);
+    expect((await request(app).post('/agent-links').send({ target: 'card', ref, comment: 'p:12345678-1234-1234-1234-123456789abc' })).status).toBe(400);
+  });
   it('adds the split-identity warning with the machines named', async () => {
     write(path.join(dir, 'identity.json'), key());
     split = ['laptop'];

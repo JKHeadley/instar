@@ -9,6 +9,7 @@
 // short allow-list (no images, no raw HTML). Without the formatter it is shown as plain text.
 
 import { el, setKids, pageHead, sheet, closeSheet, note, cantTell, firstPaint, markNeed, askPin } from './ui.js';
+import { cardAppLinkControl } from './work-app-link.js';
 import { hashFor } from './chats-model.js';
 import { projectsSection } from './projects.js';
 import {
@@ -409,7 +410,7 @@ function openCard(card, refresh) {
   if (taps.length) detail.push(block('What people decided', el('ul', {}, taps.map((t) => el('li', { text: `${tapWords(t.action)}: ${byWords(t.by)}, ${when(t.at)}` })))));
   const details = el('details', { class: 'wc-details' }, el('summary', { class: 'wc-details-head' }, el('span', { text: 'Details' }), el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })), el('div', { class: 'wc-details-body' }, detail));
 
-  const mainCol = el('div', { class: 'wc-main' }, hero, warn, closedNode, decide, checks, needBody, doneWhen, details);
+  const mainCol = el('div', { class: 'wc-main' }, hero, cardAppLinkControl(card.id, send), warn, closedNode, decide, checks, needBody, doneWhen, details);
   const panel = sheet({ title: String(card.title || 'Card') }, el('div', { class: 'wc-detail' }, mainCol, conversationPanel(card)));
   panel.classList.add('sheet-wide', 'wc-sheet');
   // The hero carries the title in large type; the sheet's own bar names the place (the dialog keeps the title as its label).

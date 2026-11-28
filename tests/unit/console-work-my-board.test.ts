@@ -158,3 +158,22 @@ describe('explicit internal-agent board view', () => {
     expect(location.hash).toContain('view=agent');
   });
 });
+
+describe('card app entry on the actual Work detail', () => {
+  beforeEach(() => { installDom(); });
+  it('wires the explicit button to the authenticated link builder', async () => {
+    const ref = 'wc_0123456789abcdef';
+    localStorage.setItem('instar_token', 'fixture-only');
+    await render(boardBody({ waiting: [card(ref)] }));
+    // Open the actual row through its title control.
+    const opener = [...document.querySelectorAll('button')].find((b) => b.textContent.includes(`Card ${ref}`));
+    expect(opener).toBeDefined(); opener.click();
+    const control = document.querySelector('.work-app-link button');
+    expect(control?.textContent).toBe('Open in Instar');
+    control.click();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith('/agent-links', expect.objectContaining({
+      method: 'POST', headers: expect.objectContaining({ Authorization: 'Bearer fixture-only' }),
+      body: JSON.stringify({ target: 'card', ref }),
+    })));
+  });
+});

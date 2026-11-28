@@ -68,6 +68,9 @@ describe('buildAgentLink', () => {
     expect(doc.ok && doc.link.ref).toBe('12345678-1234-1234-1234-123456789abc');
     const withComment = buildAgentLink(ID, { target: 'doc', ref: '12345678-1234-1234-1234-123456789abc', comment: 'p1:12345678-1234-1234-1234-123456789abc' });
     expect(withComment.ok && withComment.url).toContain('&c=p1%3A12345678');
+    const card = buildAgentLink(ID, { target: 'card', ref: 'wc_0123456789abcdef' });
+    expect(card.ok && parseAgentLink(card.url.split('#')[1])).toEqual({ id: ID, target: 'card', ref: 'wc_0123456789abcdef', comment: null });
+    expect(buildAgentLink(ID, { target: 'card', ref: 123 })).toEqual({ ok: false, error: 'bad-target' });
     const tg = buildAgentLink(ID, { target: 'conversation', ref: 144473 });
     expect(tg.ok && tg.link.ref).toBe('tg:144473');
   });

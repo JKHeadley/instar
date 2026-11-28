@@ -9,7 +9,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TG_RE = /^tg:[1-9][0-9]{0,15}$/; // plus value <= Number.MAX_SAFE_INTEGER (checked below)
 // The server's comment-key pattern (src/documents/rows.ts isCommentKey): author key, ':', comment uuid.
 const COMMENT_RE = /^[A-Za-z0-9._:-]{1,200}:[0-9a-f-]{36}$/;
-const FIELDS = { home: [], doc: ['r', 'c'], conversation: ['r'] };
+const FIELDS = { home: [], doc: ['r', 'c'], conversation: ['r'], card: ['r'] };
 /** The longest valid fragment, computed from the field patterns (no separately chosen cap). */
 export const MAX_FRAGMENT = 'v=1&i=&t=conversation&r=&c='.length + 64 + 36 + 3 * 237;
 // (3x: a comment key may arrive percent-encoded, ':' as %3A.)
@@ -46,6 +46,7 @@ export function parseAgentLink(hash) {
   const comment = q.get('c') ?? null;
   if (target === 'doc' && (!ref || !UUID_RE.test(ref))) return null;
   if (target === 'conversation' && (!ref || !(UUID_RE.test(ref) || (TG_RE.test(ref) && Number(ref.slice(3)) <= Number.MAX_SAFE_INTEGER)))) return null;
+  if (target === 'card' && (!ref || !/^wc_[0-9a-f]{16}$/.test(ref))) return null;
   if (comment !== null && !COMMENT_RE.test(comment)) return null;
   return { id, target, ref, comment };
 }
@@ -70,7 +71,7 @@ if (typeof document !== 'undefined') {
     const open = document.getElementById('open');
     if (open) open.setAttribute('href', appLink(parsed));
     const what = document.getElementById('what');
-    if (what) what.textContent = parsed.target === 'doc' ? 'a document' : parsed.target === 'conversation' ? 'a conversation' : 'an agent';
+    if (what) what.textContent = parsed.target === 'card' ? 'a work card' : parsed.target === 'doc' ? 'a document' : parsed.target === 'conversation' ? 'a conversation' : 'an agent';
     const copy = document.getElementById('copy');
     if (copy) copy.addEventListener('click', () => {
       const done = () => { copy.textContent = 'Copied'; };

@@ -199,3 +199,9 @@ A real `https://instar.sh/a#…` link to an Echo conversation and to a document,
 ## Rollback
 
 Flag off (`agentLinks.enabled: false`) at once stops the link builder and the identity route on that machine; rows already `bound` keep opening links until each device's next routes refresh moves them to `off`. That window is harmless: a link only navigates, and the server checks access on every request. The site page and AASA entries are static and harmless when unused; reverting the site commit removes them. App builds without the handler cannot resolve these links: the fallback page still opens, but its button and paste need an app update.
+
+## Work Card Navigation Extension
+
+`target: "card"` takes a required `ref` matching `wc_[0-9a-f]{16}` and no comment. It uses the existing agent identity, pairing selection, and per-request authorization. It grants no access and performs no card action. Server, site, and native parsers must agree on the shared vectors. Older clients refuse this new target until updated.
+
+An authenticated dashboard card offers **Open in Instar**. The explicit action calls the existing authenticated `/agent-links` builder, then shows **Continue in Instar** with the checked permanent URL. The current web card remains available, including when links are disabled or cannot be built. The public `/a` page remains a no-network app fallback; it does not discover dashboard addresses or redirect to arbitrary origins.
