@@ -78,17 +78,7 @@ function walk(tokens: readonly Token[], emit: (b: RawBlock) => void, quote: numb
   for (const t of tokens) {
     switch (t.type) {
       case 'space': case 'hr': case 'def': case 'checkbox': flush(); break;
-      case 'heading': {
-        flush();
-        const heading = t as Tokens.Heading;
-        const runs = inlineRuns(heading.tokens, []);
-        if (heading.text.includes('\n') || /\n {0,3}-+$/.test(heading.raw.trimEnd())) {
-          emit({ kind: item ? 'item' : 'paragraph', ordered: item?.ordered, level: item?.level, quote, runs });
-        } else {
-          emit({ kind: 'heading', level: heading.depth, quote, runs });
-        }
-        break;
-      }
+      case 'heading': flush(); emit({ kind: 'heading', level: (t as Tokens.Heading).depth, quote, runs: inlineRuns((t as Tokens.Heading).tokens, []) }); break;
       case 'paragraph': flush(); emit({ kind: item ? 'item' : 'paragraph', ordered: item?.ordered, level: item?.level, quote, runs: inlineRuns((t as Tokens.Paragraph).tokens, []) }); break;
       case 'code': flush(); emit({ kind: 'code', quote, runs: [{ text: (t as Tokens.Code).text, marks: ['code'] }] }); break;
       case 'html': flush(); emit({ kind: 'html', quote, runs: [{ text: (t as Tokens.HTML).text, marks: [] }] }); break;

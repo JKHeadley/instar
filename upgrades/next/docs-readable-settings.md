@@ -1,11 +1,11 @@
 ## What Changed
 
-The document viewer hides recognized settings at the start of a document and displays dash-underlined prose in its normal size. Saved comments keep their places in the document body.
+The document viewer hides recognized settings at the start of a document. Authored headings keep their style. Text selection, comment quotes and saved highlights keep their original positions.
 
 ## What to Tell Your User
 
-Documents that begin with settings now open on the content you came to read. Your existing comments on the body still point to the same text.
+Documents that begin with settings open on the article. You can still select a passage and comment on it, all the way through the last word.
 
 ## Summary of New Capabilities
 
-The viewer recognizes leading document settings and keeps them out of the reading page.
+The reading page recognizes leading document settings while retaining its existing commenting behavior.

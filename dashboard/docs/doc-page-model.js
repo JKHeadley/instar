@@ -107,8 +107,8 @@ export function bodyProblem(text) {
 // ── projection text and offsets ─────────────────────────────────────────────────────────────────
 
 export const blockText = (block) => block.runs.map((r) => r.text).join('');
-/** The projection: every block's text, joined by "\n" (render.ts). */
-export const projectionOf = (blocks) => blocks.map(blockText).join('\n');
+/** Keep absolute offsets for visible blocks, including when the page omits leading settings. */
+export const projectionOf = (blocks) => ' '.repeat(blocks[0]?.start ?? 0) + blocks.map(blockText).join('\n');
 
 /**
  * A point inside a block → projection offset. `runLengths` are the block's run text lengths in

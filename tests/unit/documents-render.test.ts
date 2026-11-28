@@ -35,14 +35,28 @@ describe('render tree', () => {
     expect(projection.text.slice(body[1].start, body[1].end)).toBe('Select this sentence.');
   });
 
-  it('keeps authored prose around dividers, and renders dash-underlined prose without a heading', () => {
-    const md = '---\nA real paragraph\nspanning two lines\n---\n\nA single line above a divider\n---\n\nA heading\n===\n';
+  it('keeps authored headings and prose outside leading settings', () => {
+    const md = 'Section heading\n---\n\nParagraph before a divider.\n\n---\n\nA heading\n===\n';
     expect(renderPageTree(md).map(block => [block.kind, block.runs.map(run => run.text).join('')])).toEqual([
-      ['paragraph', 'A real paragraph spanning two lines'],
-      ['paragraph', 'A single line above a divider'],
+      ['heading', 'Section heading'],
+      ['paragraph', 'Paragraph before a divider.'],
       ['heading', 'A heading'],
     ]);
     expect(renderPageTree('---\ntitle: Draft\n---\n')).toEqual([]);
+  });
+
+  it('keeps leading blocks when a reference resolved in the full document changes the prefix', () => {
+    const md = '---\nnote: [read][ref]\n---\n\n# Article\n\nBody.\n\n[ref]: https://example.com\n';
+    const complete = renderTree(md);
+    expect(complete[0].runs.map(run => run.text).join('')).toBe('note: read');
+    expect(renderPageTree(md)).toEqual(complete);
+  });
+
+  it('handles CRLF and preserves the body offset when the settings are hidden', () => {
+    const md = '---\r\ntitle: Draft\r\n---\r\n\r\n# Article\r\n\r\nBody';
+    const [heading] = renderPageTree(md);
+    expect(heading.runs.map(run => run.text).join('')).toBe('Article');
+    expect(heading.start).toBe(projectText(md).text.indexOf('Article'));
   });
 
   it('equals the projection on 400 random documents', () => {

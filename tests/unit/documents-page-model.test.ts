@@ -6,7 +6,7 @@ import { docpageString as serverString, DOCPAGE_OPS } from '../../src/documents/
 import { canonicalJson as serverCanonical } from '../../src/documents/chain.js';
 import { blobHash } from '../../src/documents/blobs.js';
 import { commentKeysHashOf } from '../../src/documents/service.js';
-import { renderTree } from '../../src/documents/render.js';
+import { renderPageTree, renderTree } from '../../src/documents/render.js';
 import { projectText } from '../../src/documents/projection.js';
 
 const sha = async (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
@@ -91,6 +91,35 @@ describe('selection → projection offsets', () => {
 
   it('the page projection equals the server projection', () => {
     expect(m.projectionOf(blocks)).toBe(text);
+  });
+
+  it('quotes the final word at its server offset when settings are hidden', () => {
+    const markdown = '---\ntitle: Internal note\n---\n\n# Plan\n\nWe ship the viewer on Friday';
+    const visible = renderPageTree(markdown);
+    const browserText = m.projectionOf(visible);
+    const final = visible.at(-1)!;
+    const lengths = final.runs.map(run => run.text.length);
+    const word = 'Friday';
+    const start = m.pointOffset(final.start, lengths, 0, lengths[0] - word.length);
+    const end = m.pointOffset(final.start, lengths, lengths.length, 0);
+    const selection = m.normalizeSelection(start, end, browserText);
+    expect(selection).toEqual({ start, end });
+    expect(browserText.slice(start, end)).toBe(word);
+    expect(projectText(markdown).text.slice(start, end)).toBe(word);
+    expect(browserText).not.toContain('Internal note');
+  });
+
+  it('clips a comment across the hidden boundary to its visible words', () => {
+    const visible = renderPageTree('---\ntitle: Internal note\n---\n\n# Article\n\nBody');
+    const first = visible[0];
+    const hits = m.segmentBlock(first, [
+      { key: 'hidden', start: 0, end: first.start - 1 },
+      { key: 'crossing', start: first.start - 2, end: first.start + 3 },
+    ]);
+    expect(hits.map(piece => [piece.text, piece.keys])).toEqual([
+      ['Art', ['crossing']],
+      ['icle', []],
+    ]);
   });
 
   it('maps a point inside a run', () => {
