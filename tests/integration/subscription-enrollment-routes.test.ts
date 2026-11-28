@@ -66,7 +66,8 @@ describe('/subscription-pool enrollment routes (integration)', () => {
       startTime: new Date(),
       enrollmentWizard: wizard,
       enrollmentCompleteInFlightHook: (id: string) => enrollmentCompleteInFlightHook?.(id),
-      subscriptionPool: { get: (id: string) => id === 'codex-1' ? { id, configHome: path.join(dir, 'codex-1') } : null },
+      subscriptionPool: { get: (id: string) => id === 'codex-1' ? { id, configHome: path.join(dir, 'codex-1') }
+        : id === 'claude-1' ? { id, email: 'Owner@Example.com', configHome: path.join(dir, 'claude-1') } : null },
       quotaPoller: {
         invalidateIdentityCache: (slots: string[]) => invalidatedSlots.push(...slots),
         pollAccount: async (account: { id: string }) => { polledAccounts.push(account.id); return null; },
@@ -256,6 +257,61 @@ describe('/subscription-pool enrollment routes (integration)', () => {
     expect(res.body.reissued).toHaveLength(1);
     expect(res.body.reissued[0].authRevisionBaseline).toBeUndefined();
     expect(JSON.stringify(res.body)).not.toContain('opaque-reissue-baseline');
+  });
+
+  it('POST /enroll defaults expectedEmail to the account email on record (a hand-started login is not held as missing-expected-email)', async () => {
+    const res = await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'claude-1', label: 'claude', provider: 'openai', framework: 'codex-cli' }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.login.expectedEmail).toBe('Owner@Example.com');
+    expect(store.get('claude-1')?.expectedEmail).toBe('Owner@Example.com');
+  });
+
+  it('POST /enroll accepts an expectedEmail that matches the recorded one, ignoring case', async () => {
+    const res = await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'claude-1', label: 'claude', provider: 'openai', framework: 'codex-cli', expectedEmail: ' owner@example.com ' }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.login.expectedEmail).toBe('owner@example.com');
+  });
+
+  it('POST /enroll refuses an expectedEmail that differs from the recorded account email, and starts no login', async () => {
+    const res = await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'claude-1', label: 'claude', provider: 'openai', framework: 'codex-cli', expectedEmail: 'someone-else@example.com' }),
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('expected-email-mismatch');
+    expect(store.get('claude-1')).toBeFalsy();
+  });
+
+  it('POST /enroll uses a given expectedEmail for an account with no recorded email', async () => {
+    const res = await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'brand-new', label: 'new', provider: 'openai', framework: 'codex-cli', expectedEmail: 'new@example.com' }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.login.expectedEmail).toBe('new@example.com');
+  });
+
+  it('POST /enroll leaves expectedEmail unset when neither the body nor the account has one', async () => {
+    const res = await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli' }),
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.login.expectedEmail).toBeUndefined();
+  });
+
+  it('POST /enroll refuses a non-string expectedEmail with 400', async () => {
+    const res = await api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'claude-1', label: 'claude', provider: 'openai', framework: 'codex-cli', expectedEmail: 42 }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it('400 when required fields are missing', async () => {
