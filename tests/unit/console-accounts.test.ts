@@ -42,6 +42,16 @@ describe('accounts page model', () => {
     expect(p.accounts[0].cells[0].state).toBe('attn');
     expect(p.accounts[0].readingAt).toBe(Date.parse(iso(-15)));
   });
+  it('keeps the latest valid check for an empty row and ignores future-dated quota', () => {
+    const page = buildAccountsPage(ok({ accounts: [
+      row({ id: 'empty', lastQuota: { measuredAt: iso(-20) } }),
+      row({ id: 'empty', machineId: 'm2', lastQuota: { measuredAt: iso(90), sevenDay: { utilizationPct: 90 } } }),
+      row({ id: 'weekly', lastQuota: { measuredAt: iso(-5), sevenDay: { utilizationPct: 20, resetsAt: iso(60) } } }),
+    ] }), NOW);
+    expect(page.accounts.map(a => a.id)).toEqual(['weekly', 'empty']);
+    expect(page.accounts[1]).toMatchObject({ windows: [], line: 'No reading yet.', lastCheckedAt: Date.parse(iso(-20)) });
+  });
+
   it('puts ordinary sign-in gaps and stopped repairs in the agent status area', () => {
     const p = buildAccountsPage(ok({ accounts: [row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth' })] }), NOW, {
       episodes: [{ id: 'e1', accountId: 'luna', machineId: 'm2', state: 'failed', updatedAt: iso(-10) }] });

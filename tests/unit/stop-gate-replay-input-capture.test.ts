@@ -110,6 +110,18 @@ describe('stop-gate replay-input capture (CMT-2204)', () => {
     expect(verdict.eligible && verdict.exact).toBe(false);
   });
 
+  it('removes private key blocks from both replay text fields', async () => {
+    const keyBody = 'QUJDREVGRw==';
+    const pem = ['-----BEGIN PRIVATE KEY-----', keyBody, '-----END PRIVATE KEY-----'].join('\n');
+    const { provider, seen } = recordingProvider();
+    await makeGate(provider, { recordReplayInput: true, selfDeferralGuardEnabled: true })
+      .evaluate(input(pem, pem));
+    const captured = JSON.stringify(seen.context);
+    expect(captured).toContain('REDACTED');
+    expect(captured).not.toContain(keyBody);
+    expect(captured).not.toContain('BEGIN PRIVATE KEY');
+  });
+
   it('the served contextRedacted never carries the captured text', async () => {
     const { provider, seen } = recordingProvider();
     await makeGate(provider, { recordReplayInput: true, selfDeferralGuardEnabled: true }).evaluate(input());

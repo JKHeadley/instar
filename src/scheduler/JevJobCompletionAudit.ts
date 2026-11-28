@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { scrubForStore } from '../core/durableSecretScrub.js';
+import { scrubForStore, scrubJsonValueForStore } from '../core/durableSecretScrub.js';
 import { BoundedJsonlAudit } from '../core/BoundedJsonlAudit.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
@@ -382,7 +382,7 @@ export class JevJobCompletionAudit {
       instrumentAssessment:
         input.instrumentAssessment === undefined
           ? undefined
-          : clamp(scrubForStore(JSON.stringify(input.instrumentAssessment)).text, GOAL_CLAMP_BYTES).text,
+          : clamp(JSON.stringify(scrubJsonValueForStore(input.instrumentAssessment)) ?? '', GOAL_CLAMP_BYTES).text,
       effects,
       deterministic,
       trivialHeuristic,

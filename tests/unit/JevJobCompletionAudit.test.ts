@@ -90,6 +90,23 @@ function input(over: Partial<CaptureInput> = {}): CaptureInput {
 }
 
 describe('capture — bounded, durable, never throws', () => {
+  it('scrubs JSON snippets and private key blocks before encoding', async () => {
+    const secret = 'exampleValue12345';
+    const keyBody = 'QUJDREVGRw==';
+    const snippet = `{"api_key":"${secret}"}`;
+    const pem = ['-----BEGIN PRIVATE KEY-----', keyBody, '-----END PRIVATE KEY-----'].join('\n');
+    const audit = make({});
+    audit.capture(input({ runId: 'raw-scrub-order', instrumentAssessment: { snippet, pem, password: 123456789012 } }));
+    await audit.flush();
+    const stored = readPack('raw-scrub-order').instrumentAssessment;
+    expect(stored).toContain('REDACTED');
+    expect(stored).toContain('api_key');
+    expect(stored).not.toContain(secret);
+    expect(stored).not.toContain(keyBody);
+    expect(stored).not.toContain('123456789012');
+    expect(stored).not.toContain('BEGIN PRIVATE KEY');
+  });
+
   it('writes one pack per runId even when completion writers race (pack-file dedupe)', async () => {
     const a = make({});
     a.capture(input({ runId: 'race-1' }));

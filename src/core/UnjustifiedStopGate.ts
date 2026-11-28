@@ -38,6 +38,7 @@ import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { IntelligenceProvider } from './types.js';
 import { DP_UNJUSTIFIED_STOP_GATE } from '../data/provenanceCoverage.js';
 import { buildStructuredSha256Identity, CONTENT_FULL_KEY } from './JudgmentProvenanceLog.js';
+import { scrubForStore } from './durableSecretScrub.js';
 import { scrubSecrets } from '../monitoring/scrubSecrets.js';
 import { resolveDevAgentGate, type DevAgentGateConfig } from './devAgentGate.js';
 import type { StopGateBreakerState, StopGateBreakerStateStore } from './StopGateBreakerState.js';
@@ -372,7 +373,7 @@ export function resolveStopGateReplayInput(config: DevAgentGateConfig & { monito
 /** Version of the stop-gate replay capture shape written under CONTENT_FULL_KEY. */
 export const STOP_REPLAY_CAPTURE_VERSION = 'stop-replay-input-v1';
 /** The scrub applied to the stored copy only (the model still sees the original). */
-export const STOP_REPLAY_SCRUB_VERSION = 'scrub-secrets-v1';
+export const STOP_REPLAY_SCRUB_VERSION = 'durable-secret-scrub-v2';
 
 /**
  * The exact prompt the authority sends. Pure: the system template, the trusted
@@ -397,10 +398,11 @@ export function buildStopGatePrompt(
 
 /** Credential-shape scrub of the untrusted text, preserving structure. Pure. */
 export function scrubStopGateUntrusted(content: UntrustedContent): UntrustedContent {
+  const scrubText = (text: string) => scrubSecrets(scrubForStore(text).text);
   return {
     ...content,
-    stopReason: scrubSecrets(content.stopReason ?? ''),
-    recentTurns: (content.recentTurns ?? []).map((t) => ({ ...t, text: scrubSecrets(t?.text ?? '') })),
+    stopReason: scrubText(content.stopReason ?? ''),
+    recentTurns: (content.recentTurns ?? []).map((turn) => ({ ...turn, text: scrubText(turn?.text ?? '') })),
   };
 }
 
