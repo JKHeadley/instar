@@ -221,6 +221,14 @@ for (const dir of OUT_DIRS) {
   fs.writeFileSync(path.join(dir, 'standards-guard-index.meta.json'), guardIndexMeta);
 }
 
+// The master pair is committed captured source, unlike the generated retained
+// registry. One complete copy reaches the compiled resolver; builds stay offline.
+const governingModule = await import(pathToFileURL(path.join(ROOT, 'dist/core/standardsRegistryPath.js')).href);
+const governingDir = path.join(ROOT, 'src/data/constitution');
+const governing = governingModule.resolveGoverningConstitution(governingDir);
+if (!governing.usable) die(`governing constitution: ${governing.reason}`);
+fs.cpSync(governingDir, path.join(ROOT, 'dist/data/constitution'), { recursive: true });
+
 console.log(
   `✓ standards registry asset: ${articleCount} articles, registry ${sha256.slice(0, 12)}…, ` +
     `guards ${guardIndexSha256.slice(0, 12)}… → ` +

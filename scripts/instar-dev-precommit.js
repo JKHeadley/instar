@@ -503,6 +503,20 @@ if (freshestTrace && freshestTrace.causalAutopsy !== undefined) {
   }
 }
 
+// All tiers surface evidence before branching. This is advisory only: source
+// freshness is an exact observation, never a constitutional or merge verdict.
+let constitutionalReviewAudit = { status: 'unavailable', reason: 'not-recorded' };
+try {
+  const { corroborateConstitutionReview } = await import('../skills/instar-dev/scripts/constitutional-review.mjs');
+  const record = freshestTrace.constitutionalReview;
+  const corroboration = await corroborateConstitutionReview(ROOT, record, { specPath: freshestTrace.specPath, eli16Path: freshestTrace.eli16Path, artifactPath: freshestTrace.artifactPath });
+  const fresh = corroboration.fresh;
+  constitutionalReviewAudit = { status: fresh ? 'checked' : 'unavailable', reason: fresh ? null : corroboration.reason,
+    inputSha256: record?.inputSha256 ?? null, sourceIdentity: record?.sourceIdentity ?? null, checkerIdentity: record?.checkerIdentity ?? null,
+    findings: fresh && Array.isArray(record.report?.findings) ? record.report.findings.length : null };
+} catch { /* @silent-fallback-ok: explicit unavailable advisory, never a fabricated pass */ }
+if (constitutionalReviewAudit.status !== 'checked') console.error(`[constitution advisory] ${constitutionalReviewAudit.reason}; independent constitutional assessment is still needed. Work is not blocked.`);
+
 // AUDIT (all in-scope cases): one JSON line, written regardless of branch.
 // belowFloor = the agent declared UNDER the risk-signaled floor. We never
 // block on it (the mind holds authority) — the record is the backstop.
@@ -520,6 +534,7 @@ const decisionEntryPath = writeDecisionAudit({
   addedLines,
   deletedLines,
   causalAutopsy,
+  constitutionalReview: constitutionalReviewAudit,
   classClosure: (freshestTrace && typeof freshestTrace.classClosure === 'object' && freshestTrace.classClosure) || null,
 });
 // Malformed autopsy blocks AFTER the audit write — the blocked attempt is
@@ -1501,7 +1516,7 @@ function blockCommit(files, reason) {
 // fire, the line just evaporated with the worktree). If the commit is later
 // blocked by the gate, the staged line simply rides the retry commit — both
 // lines describe real gate evaluations.
-function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, scopeFiles, addedLines, deletedLines, causalAutopsy = null, classClosure = null }) {
+function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, scopeFiles, addedLines, deletedLines, causalAutopsy = null, classClosure = null, constitutionalReview = null }) {
   try {
     fs.mkdirSync(DECISIONS_DIR, { recursive: true });
     const ts = new Date().toISOString();
@@ -1542,6 +1557,7 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
       // This is THE meta-analysis substrate: convergence vs whack-a-mole is
       // a query over these entries, not archaeology.
       causalAutopsy,
+      constitutionalReview,
       // Class-closure declaration (docs/specs/class-closure-gate.md +
       // self-action-convergence.md → E3): persisted from the instar-dev TRACE
       // into the machine-readable decision-audit host the CI class-closure lint

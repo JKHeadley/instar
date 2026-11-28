@@ -255,3 +255,35 @@ The signal-vs-authority principle (`docs/signal-vs-authority.md`) is not a sugge
 If a change adds blocking authority with brittle logic, the answer is "no" and the design must be reworked before the artifact can be completed. The reviewer subagent in Phase 5 is specifically looking for this violation in high-risk changes.
 
 This is how we stop the meta-pattern: fixes with side effects that cause fixes with side effects. The skill is the gate. The hooks are the enforcement. The principle is the standard.
+
+## Constitutional assessment for every development tier
+
+<!-- INSTAR:ALL-TIER-CONSTITUTION-REVIEW -->
+Tier 1 keeps its lighter process but still receives constitutional assessment. Stage the substantive
+change and its plain-language overview before independent review, then run:
+
+```bash
+node skills/instar-dev/scripts/constitutional-review.mjs --spec docs/specs/<slug>.md --artifact upgrades/side-effects/<slug>.md
+# Without a full spec, pass --eli16-path <overview> instead of --spec.
+```
+
+The helper uses the existing local authenticated conformance service. Warnings never block work.
+Unavailable, oversize, sensitive input or missing governing sources remain explicit unknown, not a
+clean check. The trace writer also prepares this evidence for every tier and reuses only completed
+checks of unchanged substantive input, governing source and checker contract. Generated review
+outputs do not invalidate the source digest. Re-run after source changes or after an unavailable
+service recovers. No input is silently cut to fit.
+
+Give the existing independent reviewer the complete governing purpose and rule book from
+`src/data/constitution/`, their pinned source metadata, the actual change, and the tentative advisory.
+The reviewer makes its own assessment, cites applicable Rules, distinguishes Values, and reconciles
+findings with reasons; an empty report is never approval. Preserve all eight existing side-effects
+questions. SMALL builds use their one independent reviewer; larger/riskier builds keep their
+existing spec and second-pass reviews. In Echo Bugs, a narrow fix outside build also receives the
+overseer's independent completion assessment. Outside that pipeline, the shared helper alone
+provides an advisory to its builder, not a universal independent-review guarantee.
+
+Source changes must compare the captured pair with exact upstream bytes on protected main:
+`node scripts/check-constitution-pairing.mjs sources --directory src/data/constitution --current`.
+`--refresh` updates both copies from canonical main; review those source changes independently.
+Check source status and version honestly, including any draft header.

@@ -1864,7 +1864,7 @@ export class FeedbackExecutorService {
       outcome = { ...judgeRoutedFeedbackReview(reviewers, lead), reviewers };
     }
     this.opts.audit.append('execute:independent-review', { attemptId: row.attemptId, pr: prNumber, head: headSha, pass: outcome.pass, reason: outcome.reason,
-      reviewers: outcome.reviewers.map((r) => ({ family: r.family, model: r.model, status: r.status, verdict: r.verdict, reason: r.reason })) });
+      reviewers: outcome.reviewers.map((r) => ({ family: r.family, model: r.model, status: r.status, verdict: r.verdict, reason: r.reason, constitutionalReview: r.constitutionalReview ?? { context: 'unavailable', reason: 'not-reported' } })) });
     if (outcome.pass) {
       this.opts.store.patch(epoch, row.attemptId, { reviewSha: headSha, reviewVerdict: 'pass', reviewReason: outcome.reason, reviewedAt: this.now(), reviewRetries: retries });
       this.gradeLatestDecision(epoch, row.initiativeId, 'executor-independent-review-passed', 'right', 'weak');

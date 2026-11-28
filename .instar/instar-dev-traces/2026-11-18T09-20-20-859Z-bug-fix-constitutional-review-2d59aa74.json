@@ -1,0 +1,154 @@
+{
+  "version": 3,
+  "slug": "bug-fix-constitutional-review",
+  "sessionId": "2356884b-25a2-4dbc-8bf1-4159671280aa",
+  "timestamp": "2026-11-18T09:20:20.859Z",
+  "artifactPath": "upgrades/side-effects/bug-fix-constitutional-review.md",
+  "artifactSha256": "c78587419263e7e6c5b62c18aefad6aa14f304e278ae6c936818df142023cb19",
+  "specPath": "docs/specs/bug-fix-constitutional-review.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T05-44-45-560Z-bug-fix-constitutional-review.json",
+    ".instar/instar-dev-decisions/2026-11-18T06-29-59-446Z-bug-fix-constitutional-review.json",
+    ".instar/instar-dev-traces/2026-11-18T05-44-11-062Z-bug-fix-constitutional-review-fe301bf4.json",
+    ".instar/instar-dev-traces/2026-11-18T06-29-11-511Z-bug-fix-constitutional-review-a221a53b.json",
+    ".instar/instar-dev-traces/2026-11-18T09-00-30-027Z-bug-fix-constitutional-review-cbf8ab47.json",
+    ".instar/instar-dev-traces/2026-11-18T09-16-53-789Z-bug-fix-constitutional-review-beab7a73.json",
+    "docs/specs/bug-fix-constitutional-review.eli16.md",
+    "docs/specs/bug-fix-constitutional-review.md",
+    "docs/specs/reports/bug-fix-constitutional-review-convergence.md",
+    "docs/specs/reports/bug-fix-constitutional-review-round1-claude.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round1-codex.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round1-conformance.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round2-claude.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round2-codex.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round2-conformance.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round3-claude.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round3-codex.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round3-conformance.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round4-claude.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round4-codex.json",
+    "docs/specs/reports/bug-fix-constitutional-review-round4-conformance.json",
+    "docs/specs/reports/bug-fix-constitutional-review-runtime.json",
+    "docs/specs/reports/bug-fix-constitutional-review-shared-rule-proof.json",
+    "scripts/check-constitution-pairing.mjs",
+    "scripts/generate-standards-registry-asset.mjs",
+    "scripts/instar-dev-precommit.js",
+    "skills/instar-dev/SKILL.md",
+    "skills/instar-dev/scripts/constitutional-review.mjs",
+    "skills/instar-dev/scripts/write-trace.mjs",
+    "skills/instar-feedback/SKILL.md",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/reviewers/standards-conformance.ts",
+    "src/core/standardsRegistryPath.ts",
+    "src/data/awareness/bug-fix-constitutional-review.md",
+    "src/data/builtinSkillContent.ts",
+    "src/data/constitution/purpose.md",
+    "src/data/constitution/rules.md",
+    "src/data/constitution/sources.json",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+    "src/feedback-factory/execute/executorSession.ts",
+    "src/feedback-factory/execute/independentReview.ts",
+    "src/feedback-factory/execute/reviewRules.ts",
+    "src/server/specReviewRoutes.ts",
+    "tests/e2e/constitutional-change-review-lifecycle.test.ts",
+    "tests/fixtures/constitutional-review/README.md",
+    "tests/fixtures/constitutional-review/write-trace-gate-install-check.txt",
+    "tests/fixtures/constitutional-review/write-trace-original.txt",
+    "tests/integration/constitutional-change-review.test.ts",
+    "tests/integration/constitutional-trace-review.test.ts",
+    "tests/integration/graph-witness-chunks.test.ts",
+    "tests/setup/build-dist.globalSetup.ts",
+    "tests/setup/ensure-registry-asset.globalSetup.ts",
+    "tests/setup/registryAssetFreshness.ts",
+    "tests/unit/PostUpdateMigrator-constitutionalReview.test.ts",
+    "tests/unit/constitutional-change-review.test.ts",
+    "tests/unit/feedback-factory/execute-review-rules-shared.test.ts",
+    "tests/unit/governing-constitution.test.ts",
+    "tests/unit/outbound-credential-wall-modern-formats.test.ts",
+    "tests/unit/standards-registry-asset.test.ts",
+    "upgrades/next/bug-fix-constitutional-review.md",
+    "upgrades/side-effects/bug-fix-constitutional-review.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Reviewed protected-main integration with shared constitutional criteria, proven fixture repair, and final artifact-level concurrence. Full remaining test lanes continue under the PR hold.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "constitutionalReview": {
+    "status": "unavailable",
+    "reason": "governing-context-unavailable",
+    "inputSha256": "29758206c34f7538b8ba561aee797e90f0e9e780d9c33b32febdbef39067892f",
+    "excludedPaths": [
+      "upgrades/side-effects/bug-fix-constitutional-review.md"
+    ],
+    "checkedAt": "2026-11-18T09:20:20.905Z"
+  },
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "5931f4005ce1",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 4
+      },
+      {
+        "name": "verify-claim",
+        "outcome": "consumer-verified",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/bug-fix-constitutional-review-convergence.md",
+      "iterations": 4,
+      "verified": true
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Parallel changes touched the same reviewer rule list. The integration retains the one shared source and proves exact reviewed prompt bytes, rather than dropping either reviewed requirement."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/feedback-factory/execute-review-rules-shared.test.ts",
+      "howCaught": "Both worker prompts receive all seven exact shared rule lines; full fix/spec reviewer prompts must match immutable pre-merge reviewed package hashes. The test failed with rule7 omitted, then passed with the shared rule restored."
+    },
+    "abVerdict": {
+      "runId": "echo-bug-constitution-20261118-ab",
+      "routes": [
+        "codex-cli"
+      ],
+      "cases": 3,
+      "fixed": 0,
+      "regressed": 0,
+      "unchangedCorrect": 3,
+      "evidence": "docs/specs/reports/bug-fix-constitutional-review-runtime.json",
+      "note": "Historical three-case semantic sample for the unchanged conformance reviewer. No new A/B claimed for this integration; both executor reviewer prompts are separately byte-identical to the immutable reviewed9276 package."
+    }
+  },
+  "upstreamIntegration": {
+    "mainCommit": "ab82ee92f06a7fe77bb535f39991fe8daf8a2b7f",
+    "independentReviewers": [
+      "security-adversarial",
+      "integration-performance",
+      "decisions-lessons"
+    ],
+    "promptProof": "docs/specs/reports/bug-fix-constitutional-review-shared-rule-proof.json",
+    "validation": "Combined build and all lint passed; unit70120 passed. Fixture repair: controlled A/B real-HTTP cases and all7 existing integration tests passed, security and performance concurred. Entire integration and E2E lanes still running; PR hold retained."
+  },
+  "artifactSecondPassReceipt": {
+    "reviewer": "security-adversarial",
+    "reviewedMaterialSha256": "13134ab7515a4b1e84f7f9ebf512b650686e108892bfdcbfc6a0d82f141ad4ac",
+    "verdict": "concur",
+    "note": "Full current material read, then this concurrence receipt appended. Release and remaining full lanes still pending."
+  }
+}

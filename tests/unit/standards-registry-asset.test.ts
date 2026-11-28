@@ -102,6 +102,8 @@ describe('standards registry ships as a build artifact', () => {
           path.join(root, 'docs', 'standards-registry-floor.json'),
         );
         fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(root, 'package.json'));
+        fs.mkdirSync(path.join(root, 'src/data'), { recursive: true });
+        fs.cpSync(path.join(ROOT, 'src/data/constitution'), path.join(root, 'src/data/constitution'), { recursive: true });
       }
 
       ensureRegistryAsset(sourceRoot);
@@ -142,6 +144,9 @@ describe('standards registry ships as a build artifact', () => {
         'dist/data/standards-registry.meta.json',
         'dist/data/standards-guard-index.json',
         'dist/data/standards-guard-index.meta.json',
+        'dist/data/constitution/purpose.md',
+        'dist/data/constitution/rules.md',
+        'dist/data/constitution/sources.json',
       ]) {
         expect(
           fs.readFileSync(path.join(sourceRoot, rel)),
@@ -193,6 +198,9 @@ describe('standards registry ships as a build artifact', () => {
           'package/dist/data/standards-registry.meta.json',
           'package/dist/data/standards-guard-index.json',
           'package/dist/data/standards-guard-index.meta.json',
+          'package/dist/data/constitution/purpose.md',
+          'package/dist/data/constitution/rules.md',
+          'package/dist/data/constitution/sources.json',
         ]) {
           expect(
             members.includes(member),
@@ -210,11 +218,17 @@ describe('standards registry ships as a build artifact', () => {
            'package/dist/data/standards-registry.md',
            'package/dist/data/standards-registry.meta.json',
            'package/dist/data/standards-guard-index.json',
-           'package/dist/data/standards-guard-index.meta.json'],
+           'package/dist/data/standards-guard-index.meta.json',
+           'package/dist/data/constitution/purpose.md',
+           'package/dist/data/constitution/rules.md',
+           'package/dist/data/constitution/sources.json'],
           { stdio: 'pipe' },
         );
 
         const packed = fs.readFileSync(path.join(tmp, 'package/dist/data/standards-registry.md'));
+        for (const file of ['purpose.md', 'rules.md', 'sources.json']) {
+          expect(fs.readFileSync(path.join(tmp, 'package/dist/data/constitution', file))).toEqual(fs.readFileSync(path.join(ROOT, 'src/data/constitution', file)));
+        }
         const packedMeta = JSON.parse(
           fs.readFileSync(path.join(tmp, 'package/dist/data/standards-registry.meta.json'), 'utf-8'),
         );
