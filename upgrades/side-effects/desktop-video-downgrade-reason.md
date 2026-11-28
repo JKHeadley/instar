@@ -48,6 +48,8 @@ unbounded-self-action: closure n/a (negative declaration). Records one reason st
 
 ## Second-pass review
 
+**Reviewer:** an independent second-pass subagent (Claude, fresh context, given the code and not the author's conclusion) read the change; verdict concur, no blocking defect.
+
 An independent reviewer found no blocking defect. Only fixed words cross, only the request's viewer reads it, the relay passes it untouched, all three downgrade sites are covered, and no test pins the exact reply shape. Taken from review: the field is documented as the first downgrade of the request across resumes (sections 5 and 6), and the resume reply is named as a carrier.
 
 ## Follow-up (2026-11-27 21:03 PT)
