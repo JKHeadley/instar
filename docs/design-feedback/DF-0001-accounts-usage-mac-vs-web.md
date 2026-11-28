@@ -3,12 +3,20 @@
 | | |
 |---|---|
 | Entry | DF-0001 |
-| Date of feedback | 2026-11-21, 12:12 PST |
+| Date of feedback | 2026-11-21, 12:12:47 PST (2026-11-21T20:12:47Z) |
+| Card | `wc_9274836e974be592` — the original agent-created project case card; not yet the server-owned feedback card |
+| Source message | Justin’s original Telegram message `146785` in conversation topic `141385`, recorded 2026-11-21T20:12:47Z; human-authored, not forwarded |
 | From | Justin, in the Chief of Staff conversation |
 | Screen | Accounts usage list (Claude and Codex accounts with their usage limits) |
 | Surfaces | Mac app (the worse one), web dashboard (the better one) |
 | Screenshots | Kept in the agent's private store, not in this public repository (they show real account names): the web dashboard capture (good) and the Mac app capture (worse) |
 | Standard | `docs/DESIGN-STANDARD.md` |
+
+## Source and card verification
+
+The original Telegram history was read again on 2026-11-23. It records this message as from Justin, with human authorship and no forwarding, and its words match the excerpt below. The case card above was read from the Work Board and was created on 2026-11-21T20:16:04.024Z. It currently has no verified source or requester binding and remains in its original approval state. Naming that real card here does not grant approval or make it the server-owned feedback card described in the approved design plan.
+
+The genuine server feedback binding must be established before the complete entry lint is activated. This record has no grandfathering exemption, and no fix, card completion or cross-platform acceptance is certified by adding its source metadata. The unedited message and original screenshots remain private.
 
 ## The owner's words
 
