@@ -85,6 +85,39 @@ describe('PlainChromeReloginBrowser — normal-browser transport', () => {
     await expect(browser.clickControl(1, 'Authorize')).rejects.toThrow('browser-element-not-found');
     await browser.close();
   });
+
+  it.each([true, false])('executes missing-button fallback in the same normal-browser document, form present: %s', async (hasForm) => {
+    let submissions = 0;
+    class Element { dispatchEvent() { return true; } }
+    class Form extends Element { requestSubmit() { submissions++; } }
+    const form = new Form();
+    class Input extends Element {
+      private text = '';
+      get value() { return this.text; }
+      set value(value: string) { this.text = value; }
+      closest() { return hasForm ? form : null; }
+    }
+    const input = new Input();
+    const page = fakePage({
+      document: { readyState: 'complete', querySelector: () => input, querySelectorAll: () => [] },
+      location: { protocol: 'https:' }, HTMLElement: Element, HTMLInputElement: Input, HTMLFormElement: Form,
+      Event: class {},
+    });
+    const browser = new PlainChromeReloginBrowser({ userDataDir: tmp(), launch: async () => 9, runAppleEvent: page.run });
+    try {
+      await browser.open('https://claude.ai/');
+      const before = page.sent.length;
+      if (hasForm) await browser.fillPublic('email', 'operator@example.com');
+      else await expect(browser.fillPublic('email', 'operator@example.com')).rejects.toThrow('browser-element-not-found');
+      expect(input.value).toBe('operator@example.com');
+      expect(submissions).toBe(hasForm ? 1 : 0);
+      // Actual wrapped JavaScript executes against the page: fill, then one
+      // combined button lookup/form fallback, without a third page command.
+      expect(page.sent.length - before).toBe(2);
+    } finally {
+      await browser.close();
+    }
+  });
 });
 
 describe('createReloginBrowser — the wiring the server uses', () => {

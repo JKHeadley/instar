@@ -19,7 +19,7 @@ import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { guardChildStdin } from './pipeErrorGuard.js';
-import { ChromeCdpReloginBrowser, type ChromeCdpReloginBrowserOptions, type WebAuthnCredential } from './ChromeCdpReloginBrowser.js';
+import { BrowserElementNotFoundError, ChromeCdpReloginBrowser, type ChromeCdpReloginBrowserOptions, type WebAuthnCredential } from './ChromeCdpReloginBrowser.js';
 
 /** The JXA runner: pid in argv, page JavaScript on stdin, JSON text out. The code never touches the command line. */
 const APPLE_EVENT_RUNNER = `
@@ -150,7 +150,7 @@ export class PlainChromeReloginBrowser extends ChromeCdpReloginBrowser {
     if (this.pid === null) throw new Error('relogin-browser-not-open');
     const timeoutSec = Math.max(1, Math.round(this.operationTimeoutMs / 1000));
     const value = decodeAppleEventResult<T>(await this.runAppleEvent(this.pid, wrapForAppleEvent(expression), timeoutSec));
-    if (requireTruthy && !value) throw new Error('browser-element-not-found');
+    if (requireTruthy && !value) throw new BrowserElementNotFoundError();
     return value;
   }
 
@@ -159,13 +159,13 @@ export class PlainChromeReloginBrowser extends ChromeCdpReloginBrowser {
    * A normal browser has no input-injection channel, and the provider pages measured on
    * 2026-09-24 (Claude Authorize) accept this.
    */
-  protected override async clickReal(finderExpression: string): Promise<void> {
+  protected override async clickReal(finderExpression: string, missingElementFallback = 'false'): Promise<void> {
     const clicked = await this.evaluate<boolean>(`(() => {
       const el = (${finderExpression});
-      if (!(el instanceof HTMLElement)) return false;
+      if (!(el instanceof HTMLElement)) return (${missingElementFallback});
       el.scrollIntoView({ block: 'center', inline: 'center' });
       const r = el.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) return false;
+      if (r.width === 0 || r.height === 0) return (${missingElementFallback});
       const o = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true, view: window, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
       for (const t of ['pointerover', 'pointerenter', 'mouseover', 'pointermove', 'mousemove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
         el.dispatchEvent(t.startsWith('pointer') ? new PointerEvent(t, o) : new MouseEvent(t, o));
@@ -173,7 +173,7 @@ export class PlainChromeReloginBrowser extends ChromeCdpReloginBrowser {
       el.click();
       return true;
     })()`);
-    if (!clicked) throw new Error('browser-element-not-found');
+    if (!clicked) throw new BrowserElementNotFoundError();
   }
 
   /**

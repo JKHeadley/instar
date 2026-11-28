@@ -172,6 +172,24 @@ describe('ChromeCdpReloginBrowser real process', () => {
       await browser.close();
     }
   }, 60_000);
+  it.skipIf(resolveChromeExecutable() === null)('submits a form with no next button in the document where the input was filled', async () => {
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
+    dirs.push(profile);
+    const browser = new ChromeCdpReloginBrowser({ userDataDir: profile, headless: true, launchTimeoutMs: 30_000 });
+    try {
+      const html = `<!doctype html><html><body>
+        <form onsubmit="event.preventDefault(); document.body.textContent='Authorization complete. You can close this window.'">
+          <input type="email" autocomplete="username" required>
+        </form>
+      </body></html>`;
+      await browser.open(`data:text/html,${encodeURIComponent(html)}`);
+      expect(await browser.snapshot('operator@example.com')).toMatchObject({ pageClass: 'email', hasNext: false });
+      await browser.fillPublic('email', 'operator@example.com');
+      expect(await browser.snapshot('operator@example.com')).toMatchObject({ pageClass: 'success' });
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
   it.skipIf(resolveChromeExecutable() === null)('launches isolated Chrome, classifies, fills and submits the form, and closes', async () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
     dirs.push(profile);
