@@ -4,7 +4,7 @@
  * a subprocess). Spec: autonomous-scope-accretion-completion.md §2.7 Layer B +
  * R40/R44 run-end + R35 identity echo.
  *
- * Exercises the SHIPPED hook (not a copy) via execFileSync, mirroring
+ * Exercises the SHIPPED hook (not a copy) via spawnSync, mirroring
  * autonomous-stop-hook-realcheck.test.ts. The Layer B scan is fed byte-for-byte
  * captured REAL agent-authored prose (tests/fixtures/captured/
  * scope-accretion-transcript-tail); the judge/run-end network calls are driven
@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,6 +26,7 @@ interface StateOpts {
   condition?: string;
   durationSeconds?: number;
   startedAt?: string;
+  endAt?: string;
   runId?: string;
   saEnabled?: boolean;
   tasks?: string;
@@ -44,6 +45,7 @@ function writeState(opts: StateOpts = {}) {
   const started = opts.startedAt ?? new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   const tasks = opts.tasks ?? '- [x] task one';
   let fm = `---\nactive: true\niteration: 2\nsession_id: "${UUID}"\nduration_seconds: ${opts.durationSeconds ?? 0}\nstarted_at: "${started}"\nreport_topic: "9984"\ncompletion_promise: ""\ncompletion_condition: "${opts.condition ?? 'the work is verifiably done'}"\nhard_blocker_nonce: "abc123def456"\n`;
+  if (opts.endAt !== undefined) fm += `end_at: "${opts.endAt}"\n`;
   if (opts.runId !== undefined) fm += `run_id: "${opts.runId}"\n`;
   fm += `work_dir: "${tmp}"\n`;
   fs.writeFileSync(
@@ -62,32 +64,24 @@ function writeTranscript(turns: string[]): string {
   return p;
 }
 
-function runHook(turns: string[], env: Record<string, string> = {}): { exit: number; stdout: string } {
-  let stdout = '';
-  let exit = 0;
-  try {
-    stdout = execFileSync('bash', [HOOK], {
-      cwd: tmp,
-      input: JSON.stringify({ session_id: UUID, transcript_path: writeTranscript(turns) }),
-      env: {
-        ...process.env,
-        INSTAR_HOOK_NO_TMUX: '1',
-        INSTAR_HOOK_TMUX_SESSION: '',
-        INSTAR_HOOK_BACKOFF_DISABLE: '1',
-        INSTAR_HOOK_ATTENTION_RECORD: path.join(tmp, 'attention-record.jsonl'),
-        INSTAR_HOOK_RUNEND_RECORD: path.join(tmp, 'runend-record.jsonl'),
-        INSTAR_HOOK_SIGNALS_RECORD: path.join(tmp, 'signals-record.jsonl'),
-        ...env,
-      },
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-  } catch (e: unknown) {
-    const err = e as { status?: number; stdout?: { toString(): string } };
-    exit = err.status ?? 1;
-    stdout = err.stdout?.toString() ?? '';
-  }
-  return { exit, stdout };
+function runHook(turns: string[], env: Record<string, string> = {}): { exit: number; stdout: string; stderr: string } {
+  const result = spawnSync('bash', [HOOK], {
+    cwd: tmp,
+    input: JSON.stringify({ session_id: UUID, transcript_path: writeTranscript(turns) }),
+    env: {
+      ...process.env,
+      INSTAR_HOOK_NO_TMUX: '1',
+      INSTAR_HOOK_TMUX_SESSION: '',
+      INSTAR_HOOK_BACKOFF_DISABLE: '1',
+      INSTAR_HOOK_ATTENTION_RECORD: path.join(tmp, 'attention-record.jsonl'),
+      INSTAR_HOOK_RUNEND_RECORD: path.join(tmp, 'runend-record.jsonl'),
+      INSTAR_HOOK_SIGNALS_RECORD: path.join(tmp, 'signals-record.jsonl'),
+      ...env,
+    },
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  return { exit: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
 function signalsRows(): Array<{ signals: Record<string, unknown>; topicId: string; runId: string }> {
@@ -177,6 +171,37 @@ describe('run-end reporting on EVERY exit surface (R40/R44 — no silent exit)',
     const { exit } = runHook(['still going']);
     expect(exit).toBe(0);
     expect(runendRows().at(-1)).toMatchObject({ topic: '9984', reason: 'duration-expiry', runId: 'run-x' });
+  });
+
+  it.each([
+    { startedAt: '2026-01-01T00:00:00.821412+00:00', durationSeconds: 60, tasks: '- [x] checked' },
+    { startedAt: 'malformed', endAt: '2026-01-01T00:00:00.821412+00:00', tasks: '- [ ] open' },
+    { startedAt: '2099-01-01T00:00:00Z', durationSeconds: 60, endAt: '2026-01-01T00:00:00.500-08:00' },
+    { startedAt: '2026-01-01T00:00:00.821412+00:00', durationSeconds: 60, endAt: 'malformed' },
+  ])('ends an overdue run before condition evaluation (%j)', (opts) => {
+    writeState({ ...opts, runId: 'run-x' });
+    expect(runHook(['still going']).exit).toBe(0);
+    expect(runendRows().at(-1)).toMatchObject({ reason: 'duration-expiry', runId: 'run-x' });
+    expect(signalsRows()).toEqual([]);
+  });
+
+  it('warns when the declared deadline and fallback are unusable', () => {
+    writeState({ startedAt: 'bad-start', endAt: 'bad-end', durationSeconds: 60, tasks: '- [ ] open' });
+    const result = runHook(['still going'], { INSTAR_HOOK_EVAL_OVERRIDE: 'not-met' });
+    expect(result.stderr).toContain('deadline unparseable (started_at=bad-start, end_at=bad-end, duration_seconds=60)');
+    expect(runendRows()).toEqual([]);
+  });
+
+  it('keeps working when the explicit deadline extends the duration-derived deadline', () => {
+    writeState({
+      startedAt: '2026-01-01T00:00:00Z',
+      durationSeconds: 60,
+      endAt: '2099-01-01T00:00:00Z',
+      tasks: '- [ ] open',
+    });
+    const result = runHook(['still going'], { INSTAR_HOOK_EVAL_OVERRIDE: 'not-met' });
+    expect(result.stdout).toContain('Autonomous iteration');
+    expect(runendRows()).toEqual([]);
   });
 
   it('emergency stop fires run-end IDENTICALLY (the one-step bypass is as loud as the two-step, §6)', () => {

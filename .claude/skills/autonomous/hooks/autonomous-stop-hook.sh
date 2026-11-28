@@ -282,17 +282,21 @@ fm_get_raw() {
   printf '%s' "$val"
 }
 
-# Convert the ISO-8601 timestamps written by the autonomous setup path on both
-# macOS/BSD and GNU date. BSD date's strict format rejects fractional seconds,
-# so normalize only a terminal fractional component before parsing. Invalid
-# input remains fail-safe and returns 0.
+# hook-capability: AUTONOMOUS_EXPLICIT_DEADLINE
+# BSD date rejects fractional seconds. Preserve the UTC offset while
+# normalizing persisted RFC 3339 timestamps for its %z parser.
 iso8601_epoch() {
   local raw="${1:-}"
-  local normalized
-  normalized=$(printf '%s' "$raw" | sed 's/\.[0-9][0-9]*Z$/Z/')
-  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$normalized" +%s 2>/dev/null \
-    || date -d "$normalized" +%s 2>/dev/null \
-    || echo "0"
+  local pattern='^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'
+  if [[ ! "$raw" =~ $pattern ]]; then
+    echo 0
+    return
+  fi
+  local stamp="${BASH_REMATCH[1]}" zone="${BASH_REMATCH[3]}"
+  [[ "$zone" == Z ]] && zone='+00:00'
+  date -j -f "%Y-%m-%dT%H:%M:%S%z" "${stamp}${zone/:/}" +%s 2>/dev/null \
+    || date -d "${stamp}${zone}" +%s 2>/dev/null \
+    || echo 0
 }
 
 ACTIVE=$(fm_get active)
@@ -331,6 +335,7 @@ STATE_SESSION=$(fm_get session_id)
 ITERATION=$(fm_get iteration)
 DURATION_SECONDS=$(fm_get duration_seconds)
 STARTED_AT=$(fm_get started_at)
+END_AT=$(fm_get end_at)
 COMPLETION_PROMISE=$(fm_get completion_promise)
 COMPLETION_CONDITION=$(fm_get completion_condition)
 GOAL_MODE=$(fm_get goal_mode)   # "native" = the framework's own /goal loop drives completion
@@ -580,6 +585,21 @@ if [[ "$OWNER" != "true" ]]; then
   exit 0
 fi
 
+# An explicit deadline is authoritative. Older records derive it from start
+# and duration. If neither is usable, allow completion checks to continue.
+START_EPOCH=$(iso8601_epoch "$STARTED_AT")
+DEADLINE_EPOCH=$(iso8601_epoch "$END_AT")
+if [[ $DEADLINE_EPOCH -eq 0 && $START_EPOCH -gt 0 && "$DURATION_SECONDS" =~ ^[0-9]+$ ]] &&
+   [[ $DURATION_SECONDS -gt 0 ]]; then
+  DEADLINE_EPOCH=$((START_EPOCH + DURATION_SECONDS))
+fi
+if [[ $DEADLINE_EPOCH -eq 0 ]] &&
+   { [[ "$DURATION_SECONDS" =~ ^[0-9]*[1-9][0-9]*$ ]] ||
+     [[ -n "$END_AT" && "$END_AT" != unlimited && "$END_AT" != unknown ]]; }; then
+  printf '[autonomous] deadline unparseable (started_at=%q, end_at=%q, duration_seconds=%q) — keeping run active\n' \
+    "$STARTED_AT" "$END_AT" "$DURATION_SECONDS" >&2
+fi
+
 # ── Native /goal delegation: the framework's own /goal loop owns completion. ──
 # instar injected "/goal <condition>" at start (goal_mode=native), so we DEFER the
 # continue/stop decision to native /goal's own Stop hook (we approve/exit; its hook
@@ -601,14 +621,11 @@ if [[ "$GOAL_MODE" == "native" ]]; then
     native_goal_clear; rm -f "$STATE_FILE"
     echo "[autonomous] emergency stop — native /goal cleared" >&2; exit 0
   fi
-  if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
-    NG_START=$(iso8601_epoch "$STARTED_AT")
-    if [[ "$NG_START" =~ ^[0-9]+$ ]] && [[ $NG_START -gt 0 ]] && [[ $(( $(date +%s) - NG_START )) -ge $DURATION_SECONDS ]]; then
-      notify_terminal_stop "⏰ My autonomous run on \"$(goal_snippet)\" hit its time limit and stopped. Ask me and I'll pick up where I left off."
-      run_end_call "duration-expiry (native-goal)"
-      native_goal_clear; rm -f "$STATE_FILE"
-      echo "[autonomous] duration expired — native /goal cleared" >&2; exit 0
-    fi
+  if [[ $DEADLINE_EPOCH -gt 0 && $(date +%s) -ge $DEADLINE_EPOCH ]]; then
+    notify_terminal_stop "⏰ My autonomous run on \"$(goal_snippet)\" hit its time limit and stopped. Ask me and I'll pick up where I left off."
+    run_end_call "duration-expiry (native-goal)"
+    native_goal_clear; rm -f "$STATE_FILE"
+    echo "[autonomous] duration expired — native /goal cleared" >&2; exit 0
   fi
   # Not terminal → let native /goal decide completion. Approve (its hook keeps control).
   exit 0
@@ -624,27 +641,22 @@ if [[ ! "$ITERATION" =~ ^[0-9]+$ ]]; then
   exit 0
 fi
 
-# Duration expiry. Fail-SAFE: if started_at can't be parsed (START_EPOCH falls
-# back to 0/empty), do NOT expire — an unparseable timestamp must never cause a
-# premature exit (that is the very failure class this hook exists to prevent).
+# Apply the deadline before the completion evaluator and backoff.
 REMAINING_MIN=""
-if [[ "$DURATION_SECONDS" =~ ^[0-9]+$ ]] && [[ $DURATION_SECONDS -gt 0 ]]; then
-  START_EPOCH=$(iso8601_epoch "$STARTED_AT")
-  if [[ "$START_EPOCH" =~ ^[0-9]+$ ]] && [[ $START_EPOCH -gt 0 ]]; then
-    NOW_EPOCH=$(date +%s)
-    ELAPSED=$(( NOW_EPOCH - START_EPOCH ))
-    if [[ $ELAPSED -ge $DURATION_SECONDS ]]; then
-      emit "⏰ Autonomous mode: Duration expired ($ELAPSED seconds elapsed)."
-      emit "   Session is free to exit."
-      notify_terminal_stop "⏰ My autonomous run on \"$(goal_snippet)\" just hit its time limit and stopped. Ask me and I'll pick up where I left off."
-      run_end_call "duration-expiry"
-      rm -f "$STATE_FILE"
-      exit 0
-    fi
-    REMAINING=$(( DURATION_SECONDS - ELAPSED ))
-    REMAINING_MIN=$(( REMAINING / 60 ))
-  else
-    echo "[autonomous] started_at unparseable ('$STARTED_AT') — skipping duration-expiry check (fail-safe: keep running)" >&2
+if [[ $DEADLINE_EPOCH -gt 0 ]]; then
+  NOW_EPOCH=$(date +%s)
+  REMAINING=$((DEADLINE_EPOCH - NOW_EPOCH))
+  if [[ $REMAINING -le 0 ]]; then
+    emit "⏰ Autonomous mode: Duration expired."
+    emit "   Session is free to exit."
+    notify_terminal_stop "⏰ My autonomous run on \"$(goal_snippet)\" just hit its time limit and stopped. Ask me and I'll pick up where I left off."
+    run_end_call "duration-expiry"
+    rm -f "$STATE_FILE"
+    exit 0
+  fi
+  REMAINING_MIN=$((REMAINING / 60))
+  if [[ $START_EPOCH -gt 0 ]]; then
+    ELAPSED=$((NOW_EPOCH - START_EPOCH))
   fi
 fi
 
@@ -1823,7 +1835,7 @@ if [[ -n "${ELAPSED:-}" ]]; then
     if [[ -f "$_c" ]]; then _clk_script="$_c"; break; fi
   done
   if [[ -n "$_clk_script" ]]; then
-    _clk=$(bash "$_clk_script" render "$STARTED_AT" "$DURATION_SECONDS" "$ELAPSED" "${REMAINING:-}" "$(goal_snippet)" 2>/dev/null)
+    _clk=$(bash "$_clk_script" render "$STARTED_AT" "$((DEADLINE_EPOCH - START_EPOCH))" "$ELAPSED" "${REMAINING:-}" "$(goal_snippet)" 2>/dev/null)
     [[ -n "$_clk" ]] && CLOCK_SEG=" | $_clk"
   fi
 fi
