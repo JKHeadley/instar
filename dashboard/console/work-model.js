@@ -538,7 +538,7 @@ export function workBoardNeedRows(wb) {
   const rows = shown.map((c) => ({
     key: `work:${c.id}`,
     main: needRowTitle(c.title),
-    sub: String(c.needLine || ''),
+    sub: (c.serverOwned === true && c.status === 'with-person' && str(c.brief?.ask)) || String(c.needLine || ''),
     href: `#/work/board?card=${encodeURIComponent(c.id)}`,
     // The Needs-you items this card is about (work-board-cards-appear §3). Only a card that just waits on the
     // person to act (no Approve, no Confirm done, no open question, nothing outward) may stand in for its rows.

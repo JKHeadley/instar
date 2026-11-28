@@ -64,6 +64,20 @@ describe('paging the Needs-you strip', () => {
     control!.click();
     await Promise.resolve();
   }
+  it('shows an explicit link from each legacy row to its own request', async () => {
+    const href = cardHref(1);
+    await mount(async () => ({ ok: true, data: { schemaVersion: 1, count: 2, complete: true, items: [
+      { title: 'Project decision', why: 'Choose which workspace to keep.', action: { kind: 'href', href }, card: { href } },
+      { title: 'Sign-in request', why: 'Complete the sign-in on Studio.', action: { kind: 'href', href: '#/capacity/accounts?s=needs' } },
+    ] } }));
+    const links = [...host.querySelectorAll('a.needs-row')];
+    expect(links.map(link => [link.getAttribute('href'), link.querySelector('.needs-row-action')?.textContent])).toEqual([
+      [href, 'Open card'], ['#/capacity/accounts?s=needs', 'Open details'],
+    ]);
+    expect(links[0].querySelector('.needs-why')?.textContent).toBe('Choose which workspace to keep.');
+    expect(links[0].querySelector('a')).toBeNull();
+  });
+
   it('uses the server count while showing only supported strict actions', async () => {
     const response = { ok: true, data: { schemaVersion: 2, count: 4, complete: false, divertedCount: 2,
       couldNotCheck: ['one source'], items: [

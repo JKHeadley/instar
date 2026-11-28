@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-27T12:33:40.722Z",
+  "slug": "profile-confirmation-clarity",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/handleProfileProposalReply.ts",
+      "src/core/profileProposalPlacement.ts",
+      "src/core/topicProfileWriteSurface.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot user-driven confirmation; no self-triggered loop."
+  },
+  "verdict": "blocked"
+}

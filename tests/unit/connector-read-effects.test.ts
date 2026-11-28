@@ -20,8 +20,11 @@ describe('engine-neutral connector effects', () => {
       });
       it.each(mutations)(service + ' github' + separator + '%s remains governed', (action) => {
         const name = `mcp__${service}__github${separator}${action}`;
-        expect(deriveEffect(name, {})?.operation).toBe('modify');
-        expect(admission(name)).toEqual({ verdict: 'ask', why: 'no-grant' });
+        const isCodexGitHub = service === 'codex_apps';
+        const operation = isCodexGitHub && action === 'create_pull_request' ? 'write' : 'modify';
+        const reason = isCodexGitHub && action === 'merge_pull_request' ? 'always-ask-item' : 'no-grant';
+        expect(deriveEffect(name, {})).toMatchObject({ operation, kind: `${service}.${operation}` });
+        expect(admission(name)).toEqual({ verdict: 'ask', why: reason });
       });
     }
   }

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "conversation-watch-session",
+  "sessionId": "009b59b2-3ca0-45e7-8dc4-2a12b327c22f",
+  "timestamp": "2026-11-21T18:58:52.608Z",
+  "artifactPath": "upgrades/side-effects/conversation-watch-session.md",
+  "artifactSha256": "08044d4674075ee20c7853cab72f4a9d359cda09545786b9021992cce70decd5",
+  "coveredFiles": [
+    "dashboard/console/conversation-session.js",
+    "dashboard/console/conversations.js",
+    "tests/unit/console-conversation-session.test.ts",
+    "tests/unit/console-conversations-dom.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only console display line and link; no server, gate, config or session lifecycle change",
+  "eli16Path": "docs/specs/conversation-watch-session.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-watch-session.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

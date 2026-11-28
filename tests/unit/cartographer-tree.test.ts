@@ -4,7 +4,7 @@
  * Uses a REAL temporary git repo fixture — staleness derivation is git-backed, so
  * the test exercises real `git ls-tree`/`rev-parse`, not a stub.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -49,6 +49,34 @@ afterEach(() => {
 function tree(): CartographerTree {
   return new CartographerTree({ projectDir: repo, stateDir });
 }
+
+describe('CartographerTree.scaffoldChunked', () => {
+  it('refreshes authored node files with asynchronous I/O', async () => {
+    const t = tree();
+    t.scaffold();
+    t.setSummary('src/index.ts', 'entry point');
+
+    const read = vi.spyOn(fs, 'readFileSync');
+    const write = vi.spyOn(fs, 'writeFileSync');
+    const rename = vi.spyOn(fs, 'renameSync');
+    const nodesDir = path.join(stateDir, 'cartographer', 'nodes') + path.sep;
+    try {
+      await t.scaffoldChunked({
+        chunkNodes: 500,
+        onYield: () => new Promise<void>((resolve) => setImmediate(resolve)),
+      });
+
+      for (const operation of [read, write, rename]) {
+        expect(operation.mock.calls.some(([file]) => String(file).startsWith(nodesDir))).toBe(false);
+      }
+    } finally {
+      read.mockRestore();
+      write.mockRestore();
+      rename.mockRestore();
+    }
+    expect(t.getNode('src/index.ts')?.summary).toBe('entry point');
+  });
+});
 
 describe('CartographerTree.scaffold', () => {
   it('builds a hierarchy mirroring the dir tree, skipping skip-dirs', () => {

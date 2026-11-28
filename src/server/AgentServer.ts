@@ -8328,10 +8328,19 @@ export class AgentServer {
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
           const projectTitles = cosProjectTitles();
-          return options.telegram!.getAllTopicMappings().map((m) => {
-          const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
+          const mappings = options.telegram!.getAllTopicMappings();
+          // Previews read only the tail cache or the background index, never the log itself: a
+          // per-topic getTopicHistory here scanned the whole log once per cold topic on the
+          // request path (2026-11-27 Laptop stall). A topic not indexed yet shows no preview.
+          const tg = options.telegram!;
+          const latest = typeof tg.latestTopicEntries === 'function' ? tg.latestTopicEntries(mappings.map((m) => m.topicId)) : null;
+          const rows = mappings.map((m) => {
+          // An adapter without the index (test doubles) keeps the old per-topic read.
+          const last = latest ? latest.get(m.topicId) ?? undefined : tg.getTopicHistory(m.topicId, 1)[0];
           return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
           });
+          const unknown = latest ? [...latest.values()].some((v) => v === undefined) : false;
+          return unknown ? Object.assign(rows, { partial: true as const }) : rows;
         } : undefined,
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));

@@ -183,6 +183,8 @@ export interface QuotaPollerConfig {
   }) => void;
   loginAdmission?: (cells: Array<{
     accountId: string; supported: boolean; disabled: boolean; at: string;
+    /** Still signed out in the pool (spec relogin-reopen-cancelled-incident). */
+    needsReauth?: boolean;
   }>) => Set<string>;
 }
 
@@ -1125,6 +1127,7 @@ export class QuotaPoller {
       supported: isQuotaPollSupportedAccount(account),
       disabled: account.status === 'disabled',
       at: nowIso,
+      needsReauth: account.status === 'needs-reauth',
     }))) ?? new Set(scan.accounts.map((account) => account.id));
     for (const account of scan.accounts) {
       if (!admitted.has(account.id)) continue;
