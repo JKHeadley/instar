@@ -97,6 +97,14 @@ An independent Claude Opus 5.5 reviewer subagent read the merged diff on 2026-11
 
 Main had changed the same files: PR 3966 made the held-retry and connect checks deterministic, and main added its own outcome-unknown log line. The merge keeps main's log line and its wording ("send outcome unknown for <operation>", which main's connect-failure tests search for) and adds the method and the network wait to it. The PR's own helper `describeTransportUnknown` and its separate redaction test were removed as duplicates of main's `describeTransportFailure`. The 60 s timeout stays: main's 15 s expectations were pins of the old value with no recorded reason, while the 60 s comes from the measured 14 to 33 s throttled answers.
 
+## Merge of main 49dc53022, 2026-11-27 (Throughput request via Studio Turns)
+
+Merged with merge.renames=false and merge.directoryRenames=false, so the pending note stays at upgrades/next/telegram-send-timeout-flood.md (a default merge moved it). Merge commit 009a5d409, tree cac78bc88. TelegramAdapter.ts and TelegramOriginService.ts auto-merged; the branch's added and removed lines are identical to its delta on 6aeaf1974. No shipped upgrades/<version>.md guide is edited: the diff against main is only this branch's own 17 files.
+
+**Reviewer:** independent read-only sub-agent (general-purpose, fresh context), 2026-11-27 23:20 PT. Verdict: CONCUR. "Merge 009a5d409 keeps main's and the branch's TelegramAdapter.ts and TelegramOriginService.ts hunks line-for-line, the refusal (:978) and unknown-outcome (:952) logs stay on separate paths with no conflict, the release note is unchanged, no shipped upgrade guide changed, and the diff against main is only the branch's 17 files."
+
+Whole files on 009a5d409 (base 49dc53022), via the M5 heavy wrapper: origin-service, transport-deadlines, telegram-api-edge and the three ratchet files no-empty-catch-blocks, no-silent-fallbacks, no-silent-llm-fallback. Exit 0: 6 files, 125 passed, 1 skipped. Provisional on package tree: the M5 shared install is being reinstalled, so this used a stand-in tree with a different lockfile (same vitest 2.1.9). The integration file runs on the Studio verify.
+
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect (this is a source-code timeout/logging defect) and no self-triggered controller — not applicable.
