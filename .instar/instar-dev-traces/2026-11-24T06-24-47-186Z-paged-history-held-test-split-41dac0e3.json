@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "paged-history-held-test-split",
+  "sessionId": "d4b9743a-b9a5-4e03-a043-7d2490322b08",
+  "timestamp": "2026-11-24T06:24:47.186Z",
+  "artifactPath": "upgrades/side-effects/paged-history-held-test-split.md",
+  "artifactSha256": "c43a2b45dc619e629c4e34b9404a6a7ad533541ca05ca2be92095aab50e4590e",
+  "coveredFiles": [
+    "docs/specs/paged-history-held-test-split.eli16.md",
+    "tests/helpers/graph-source-paged-history-privacy.ts",
+    "tests/integration/graph-source-paged-history-held-export.test.ts",
+    "tests/integration/graph-source-paged-history-held.test.ts",
+    "upgrades/next/paged-history-held-test-split.md",
+    "upgrades/side-effects/paged-history-held-test-split.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "This test-only partition is reversible and preserves every original test callback.",
+  "eli16Path": "docs/specs/paged-history-held-test-split.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/paged-history-held-test-split.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The verifier invokes four finite test cases and each retains its existing timeout and cleanup."
+  }
+}
