@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "accounts-keep-usable-quota",
+  "sessionId": "f84816a2-2f4b-4710-a14b-20f51e9af624",
+  "timestamp": "2026-11-27T18:52:16.234Z",
+  "artifactPath": "upgrades/side-effects/accounts-keep-usable-quota.md",
+  "artifactSha256": "ee13ef36bd70873ad90ac80d09821b2f0eddde206383e7bbc14bcca039c8c884",
+  "coveredFiles": [
+    "dashboard/console/accounts-model.js",
+    "dashboard/console/accounts.js",
+    "src/server/mobileCapacityRoutes.ts",
+    "tests/unit/console-accounts.test.ts",
+    "tests/unit/mobile-native-capacity-screens.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A reversible display and read-projection correction within the existing Accounts contract. The owner gate and sign-in operations retain their authority.",
+  "eli16Path": "upgrades/side-effects/accounts-keep-usable-quota.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-keep-usable-quota.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

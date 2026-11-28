@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-24T15:59:11.654Z",
+  "slug": "telegram-confirmation-expired",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/telegram-origin/OriginMesh.ts",
+      "src/messaging/telegram-origin/OriginOperationOutcome.ts",
+      "src/messaging/telegram-origin/OriginOwnerRead.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

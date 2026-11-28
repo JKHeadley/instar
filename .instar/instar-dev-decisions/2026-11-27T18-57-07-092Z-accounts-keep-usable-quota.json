@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T18:57:07.092Z",
+  "slug": "accounts-keep-usable-quota",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileCapacityRoutes.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

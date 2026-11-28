@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "codex-manual-balance-fresh-reset",
+  "sessionId": "ac84cfde-7918-428e-a90b-3a9baacf0561",
+  "timestamp": "2026-11-27T10:27:49.531Z",
+  "artifactPath": "upgrades/side-effects/codex-manual-balance-fresh-reset.md",
+  "artifactSha256": "769c050aa7808f6864de0f4fdfd45f444070d95c9c289561fec1f7642e91076f",
+  "coveredFiles": [
+    "docs/specs/codex-manual-balance-fresh-reset.eli16.md",
+    "src/core/ManualQuotaBalance.ts",
+    "tests/e2e/manual-quota-balance-alive.test.ts",
+    "tests/integration/manual-quota-balance.test.ts",
+    "tests/unit/manual-quota-balance.test.ts",
+    "upgrades/next/codex-manual-balance-fresh-reset.md",
+    "upgrades/side-effects/codex-manual-balance-fresh-reset.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow existing manual destination ranking fix. Existing work, stop, identity, and recovery authority remains in place.",
+  "eli16Path": "docs/specs/codex-manual-balance-fresh-reset.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-manual-balance-fresh-reset.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

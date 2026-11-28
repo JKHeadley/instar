@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-19T05:00:12.049Z",
+  "slug": "delight-the-user-standard",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 516,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/instar-dev-precommit.js",
+      "scripts/lib/delight-the-user.mjs",
+      "scripts/lib/operator-surface.mjs"
+    ],
+    "addedLines": 508,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

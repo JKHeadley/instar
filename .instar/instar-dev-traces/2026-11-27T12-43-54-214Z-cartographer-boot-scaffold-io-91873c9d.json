@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "cartographer-boot-scaffold-io",
+  "sessionId": "599a21ed-1e6a-4e32-9ed1-9e2985fee973",
+  "timestamp": "2026-11-27T12:43:54.214Z",
+  "artifactPath": "upgrades/side-effects/cartographer-boot-scaffold-io.md",
+  "artifactSha256": "941d624b028f747d6a4fc0b5e4cfe198264fafb161e623a7d942fbc997013065",
+  "specPath": "docs/specs/CARTOGRAPHER-SWEEP-EVENTLOOP-SAFETY.md",
+  "coveredFiles": [
+    "src/core/CartographerTree.ts",
+    "src/server/routes.ts",
+    "tests/integration/cartographer-refresh-route.test.ts",
+    "tests/unit/cartographer-tree.test.ts",
+    "upgrades/next/cartographer-boot-scaffold-io.md",
+    "upgrades/side-effects/cartographer-boot-scaffold-io.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes the startup writer and retry timing of an existing API. Uses the approved event-loop safety spec and independent code review.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
