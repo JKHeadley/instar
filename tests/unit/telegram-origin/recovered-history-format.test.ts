@@ -31,8 +31,10 @@ async function recoverUntilSent(h: Awaited<ReturnType<typeof lateCapacityHarness
   const recoverable = await h.runtime.store.recoverableAdmissions();
   const row = (await h.runtime.store.listOrigins()).records[0];
   const attempts = row?.attempts.map(attempt => ({ outcome: attempt.outcome, reason: attempt.reason, nextAttemptAt: attempt.nextAttemptAt }));
+  // The schedule row and the operation's state tell "reserved, then refused" apart from "never reserved".
   throw new Error(`no recovery pass sent the held reply within ${boundMs} ms: passes ${JSON.stringify(passes)}; `
-    + `recoverable now ${recoverable.length}; now ${Date.now()}; attempts ${JSON.stringify(attempts)}`);
+    + `recoverable now ${recoverable.length}; now ${Date.now()}; recovery schedule ${JSON.stringify(row?.recovery ?? null)}; `
+    + `operation state ${row?.operation?.state ?? 'none'}, hold ${row?.operation?.holdReason ?? 'none'}; attempts ${JSON.stringify(attempts)}`);
 }
 
 describe('origin recovery history representation', () => {
@@ -84,5 +86,7 @@ describe('origin recovery history representation', () => {
     expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 0 });
     expect(h.network).toHaveBeenCalledOnce();
     expect(adapter.getTopicHistory(42, 10)).toHaveLength(1);
-  }, 60_000);
+    // Up to 31 s of wait plus the 15 s pass bound plus setup: a plain vitest timeout must not
+    // fire first and swallow the pass-loop diagnostics.
+  }, 90_000);
 });
