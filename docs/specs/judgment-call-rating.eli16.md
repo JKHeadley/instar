@@ -33,7 +33,8 @@ different companies.
    commit's record cannot be saved, the commit is refused instead of going ahead silently.
 2. Each merged pull request is graded by its real calls: every passing record in it, except a
    retry of the very same commit, checked against the files that actually merged, and each judged
-   only on its own part of the change.
+   only on its own part of the change. A change that was later amended or rebased cannot be tied to
+   its own diff, so its risk level is not graded.
 3. The two-judge grader built for the tone gate gets a second mode that grades these calls with six
    questions: one per rule, plus whether the author was missing context the call needed. The judges first propose a risk level themselves, from what the change
    actually touched, without seeing the level the agent declared, the check's suggestion or the

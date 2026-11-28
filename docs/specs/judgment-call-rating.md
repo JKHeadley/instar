@@ -87,13 +87,14 @@ call.
   stored to 4,000 with `tierReasoningTruncated: <original length>`. A trace with none records
   `"missing"`. The text is public once committed, so `write-trace.mjs --tier-reasoning` help and
   the instar-dev skill say so at authoring time.
-- `trace`: `{ path, hash, staged }` — `git hash-object --stdin` of the exact buffer the hook parsed,
+- `trace`: `{ path, hash, staged }` — `git hash-object --stdin --path=<path>` of the exact buffer the
+  hook parsed,
   and whether that path is staged.
 - `validatedTrace`: for Tier 2+, the trace Step 5 accepted; if it is a different file from
   `freshestTrace`, its path and hash are recorded and `traceDiffers: true` (the grader then
   `excludes` the call from every question, because the record would otherwise mix two calls).
 - `artifact`: `{ path, hash, stagedHash }` from the trace's `artifactPath` (Tier 2+) or
-  `sideEffectsPath` (Tier 1): `hash` = `git hash-object --path=<path>` of the bytes the hook checked, `stagedHash` =
+  `sideEffectsPath` (Tier 1): `hash` = `git hash-object --stdin --path=<path>` of the buffer the hook checked, `stagedHash` =
   the staged blob's object id (`git rev-parse :<path>`). Every `stagedHash` in this spec means that
   object id. The existing sha checks are **not** changed, so no new refusal comes from this.
 - `spec`: `{ path, hash, stagedHash, staged }` from the trace's `specPath` when declared (none on
@@ -193,8 +194,8 @@ ending `(#N)`, 5 `Merge pull request #N`). Each run walks first-parent commits s
 joins each to its PR by that number (diffing a merge commit against its first parent), and counts a
 commit without one as `no-pr`.
 
-Within a PR, **every `verdict: pass` record the PR adds is a call**, with two exceptions, each
-decided from recorded evidence rather than inferred from scope:
+Within a PR, **every `verdict: pass` record the PR adds is a call**, subject to the checks below,
+applied **in this order** and each decided from recorded evidence rather than inferred from scope:
 
 - **Retry.** An earlier pass record is `superseded` when a later pass record with the same slug has
   the same `headCommit` — the same commit was attempted again (the usual cause is a check that runs
@@ -204,11 +205,14 @@ decided from recorded evidence rather than inferred from scope:
   legacy record (no `judgment` block) goes to the legacy path below. Only records with a `judgment`
   block go through the landing check.
 - **Landing.** A call's **carrying commit** is the PR commit that introduced its record file. The
-  record lands when that commit, at every recorded path, makes the transition the record describes
-  (`baseBlob` → `stagedBlob`, a deletion counting as a transition to absent). If the carrying
+  record lands when that commit's **complete set of in-scope paths equals the record's** and, at
+  every one of them, it makes the transition the record describes (`baseBlob` → `stagedBlob`, a
+  deletion counting as a transition to absent); a carrying commit that also changes other in-scope
+  paths is a mismatch, so a refused attempt cannot be credited with a larger landed change. If the carrying
   commit's transition differs — an amend (the gate runs with `HEAD` at the commit being amended, so
-  the record describes B→C while the surviving commit makes A→C), or a refused attempt whose record
-  rode a later, different commit — the call is `transition-mismatch`: it is still rated in stage 2,
+  the record describes B→C while the surviving commit makes A→C; the original commit's record is
+  mismatched the same way, so an amended change gets no tier or proportionality rating), or a
+  refused attempt whose record rode a later, different commit — the call is `transition-mismatch`: it is still rated in stage 2,
   and the diff-dependent answers (stage 1 and the proportionality question) are
   `insufficient-evidence`, rather than a small amend being judged as the whole call. A record whose
   PR history cannot be fetched is `history-unavailable`, counted and not rated.
@@ -265,9 +269,13 @@ Fenced as data with a fresh per-call code (the SEC-097 nonce lesson):
    so the calibration groups below see the same evidence.
 2. **Stage 2, the rest** — built only after the stage 1 answers are recorded: the whole stage 1
    view, `declaredTier`, `riskFloor` and `riskFloorReasons`, the tier reasoning, the artifact
-   text, the spec frontmatter (including `review-convergence`), the convergence report captured at
+   text, the spec frontmatter (including `review-convergence`) and its body as staged at gate time
+   (read by `spec.stagedHash`, bounded at 30,000 characters with the cut disclosed; a cut or
+   unavailable body makes the standard question `insufficient-evidence`), the convergence report captured at
    gate time (`spec.convergenceReport`, never one added later in the PR), `secondPassStatus` labelled as the author's attestation, and
-   the `headings` result.
+   the `headings` result. When the call's diff is missing or cut, stage 2 says so, and the review
+   question ("engage this change's real risks") is `insufficient-evidence` too; the grader-forced
+   reasons in "Agreement and retries" apply to exactly the questions named in each rule.
 
 **Later history is withheld from the judges in both stages.**
 
@@ -335,8 +343,12 @@ after the countdown date. The countdown is not closed on calibration; it is clos
 
 Calibration needs each earlier call's answers, so each totals document also carries a **per-call
 ledger**, codes only: call id (record path), PR, landing date, sampling group, `belowFloor`, each question's
-disposition and agreed code, and the grader version. A later run on any machine computes a cohort's
-calibration from the ledgers of the totals documents covering it, with no run folder needed.
+disposition and agreed code, and the grader version. Ledger entries are keyed by (call, question,
+grader version): a retry adds an entry only for the questions still unresolved, a resolved answer is
+carried forward unchanged, and rebuilding takes, per key, the latest entry — so a call has exactly
+one disposition per question however many runs touched it. A later run on any machine computes a
+cohort's calibration from the ledgers of the totals documents covering it, with no run folder
+needed.
 
 ### Sampling and cost
 
@@ -371,6 +383,13 @@ the run stops without publishing and says why in its run log. Only when the conv
 document at all does it start from the countdown start (the commit this spec lands in). One line
 goes to the benchmark topic only when a group's rate moves outside its last evaluable interval.
 
+**One writer at a time.** The grading job runs only from the Studio's scheduler, whose job lease
+already prevents two instances of one job running at once. As a second guard, a run records the id
+of the predecessor totals document it started from, and immediately before publishing re-reads the
+conversation's documents: if a newer published totals document exists, it does not publish and
+says so in its run log. Each totals document carries an idempotency key (predecessor id + run id),
+so a publication retried after an ambiguous failure is found, not duplicated.
+
 Findings are signal only: never written into the instar-dev skill, a prompt or an author's context
 automatically; any process change they suggest goes through the normal spec path.
 
@@ -395,7 +414,8 @@ for a re-date, so the countdown is never closed on records nobody has rated.
 | Carrying commit's transition differs from the record | invariant; basis: enumerable-domain; evidence: two (base, staged) pairs per path are equal or not | `transition-mismatch`; diff-dependent answers `insufficient-evidence` |
 | Grader's tier comparison | invariant; basis: enumerable-domain; evidence: an agreed proposed tier is equal to, above or below the declared tier | `right`, `too-low`, `too-high` |
 | An answer pair that differs | invariant; basis: enumerable-domain; evidence: two valid codes are equal or not | `disagreed`; counts in the rate denominator, never a finding |
-| A call's own diff cannot be rebuilt | invariant; basis: enumerable-domain; evidence: each blob resolves or not | stage 1 `insufficient-evidence` |
+| A call's own diff cannot be rebuilt | invariant; basis: enumerable-domain; evidence: each blob resolves or not | diff-dependent answers (stage 1 and proportionality) `insufficient-evidence` |
+| Record with no declared tier | invariant; basis: enumerable-domain; evidence: `declaredTier` is null or not | compared against Tier 2, the gate's own default, and labelled so |
 | Landed artifact or spec differs from the record | invariant; basis: enumerable-domain; evidence: two hashes are equal or not | dependent questions `insufficient-evidence` |
 | Checked bytes differ from staged bytes | invariant; basis: enumerable-domain; evidence: `hash` equals `stagedHash` or not | `checked-differs-from-staged`; dependent questions `insufficient-evidence` |
 | PR history cannot be fetched | invariant; basis: enumerable-domain; evidence: the head ref fetch succeeds or not | `history-unavailable`, counted, not rated |
@@ -471,7 +491,8 @@ for a re-date, so the countdown is never closed on records nobody has rated.
    `no-pr`; an artifact edited after the last gate run, and separately a spec-only edit, make the
    dependent questions `insufficient-evidence`; a legacy PR with two matching traces is `unmatched`.
 9. Stage 1's rendered prompt, with unique markers planted in a changed trace and artifact, contains
-   neither, and contains no `declaredTier`, `suggestedTier`, `riskFloor` or `riskFloorReasons` value;
+   neither, and contains neither a marker string planted in `riskFloorReasons` nor the field names
+   `declaredTier`, `suggestedTier` or `riskFloor`;
    the stage 2 prompt is built only after the stage 1 answer is stored; no judge input contains later history; a planted injection call is excluded; a planted
    fake token never reaches a judge.
 10. With one family off, every call is `incomplete`, rates publish as `unavailable`, ids carry over,
@@ -485,8 +506,12 @@ for a re-date, so the countdown is never closed on records nobody has rated.
 12. Evidence eligibility: a fixture where the hook checked bytes A while B was staged and B landed is
     `checked-differs-from-staged`; a spec-only edit after the gate run is caught by `spec.stagedHash`;
     a convergence report added in a second commit of the PR does not make the first call `convergence-recorded`;
-    a refused attempt that only deleted a file, whose record rode the next commit, is
-    `transition-mismatch`; a CRLF checkout of an LF artifact is eligible while a real unstaged edit is
+    a refused attempt that only deleted a file, whose record rode the next commit under a different
+    slug, is `transition-mismatch` (under the same slug it is `superseded`, the retry check running
+    first); a carrying commit that lands the record's change plus another in-scope path is
+    `transition-mismatch`; a standard cited only in the spec body is visible to stage 2, and an
+    unavailable body gives `insufficient-evidence`; two workers starting from one manifest publish
+    once; a partial retry rebuilds to one disposition per question; a CRLF checkout of an LF artifact is eligible while a real unstaged edit is
     `checked-differs-from-staged`; an unfetchable PR history is
     `history-unavailable`.
 13. Each question's dispositions sum to the sampled calls, and every published rate shows its
