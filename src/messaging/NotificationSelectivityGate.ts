@@ -281,13 +281,23 @@ export class NotificationSelectivityGate {
       await fs.promises.mkdir(path.dirname(file), { recursive: true });
       await fs.promises.writeFile(file + '.next', JSON.stringify({ lastAttemptAt: this.digestLast }));
       await fs.promises.rename(file + '.next', file);
-      const total = Object.values(counts).reduce((sum, value) => sum + value, 0); if (!total) return;
+      const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
+      // One durable row per daily digest cycle (CMT-2221), counts only, never the text: the ladder's
+      // evidence is the cycles themselves, so a quiet day still counts and a failed send is visible.
+      const cycle = (reason: 'digest-sent' | 'digest-empty' | 'digest-send-failed', extra: Record<string, unknown> = {}) => {
+        if (digestOn) this.ledger({ ts: new Date(this.now()).toISOString(), machineId: this.machineId, category: 'selectivity-digest',
+          sourceContext: 'selectivity-digest', decision: 'digest-cycle', reason, total, categories: Object.keys(counts).filter((id) => counts[id] > 0).length, ...extra });
+      };
+      if (!total) { cycle('digest-empty'); return; }
       const lines = notificationCategories.filter(([id]) => counts[id]).map(([id, name]) => `${counts[id]} ${name.toLowerCase()}`);
       const inventory = notificationCategories.filter(([id]) => categoryPushes(this.config(), id)).map(([, name]) => name.toLowerCase());
       const jobs = pushedJobs(this.config());
       const permit = `${this.machineId}:digest:${this.now()}`; this.permits.set(permit, this.now() + 60000);
       await this.onSummary(`${digestOn ? '' : 'A disk space notice was held quiet today, so here is the daily summary even though it is switched off. '}${total} quiet notices since the last digest: ${lines.join(', ')}. ${this.store.counters().unreadAging} unread notices are over three days old. Pushed categories: ${inventory.join(', ') || 'none'}.${jobs.length ? ` Pushed jobs: ${jobs.join(', ')}.` : ''} ${this.dashboardLink?.() ?? 'See the dashboard Notifications feed.'}`, {
         origin: 'automated', category: 'selectivity-digest', sourceContext: 'selectivity-digest', localPermit: permit,
+      }).then(() => cycle('digest-sent'), (error: unknown) => {
+        cycle('digest-send-failed', { error: error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(error.name) ? error.name : 'Error' });
+        throw error;
       });
     } catch (error) { console.warn('[selectivity] digest unavailable; next attempt is the next daily cadence:', error); }
     finally { this.digestBusy = false; }

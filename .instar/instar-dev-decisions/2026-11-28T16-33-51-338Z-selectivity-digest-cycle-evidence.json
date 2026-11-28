@@ -1,0 +1,77 @@
+{
+  "ts": "2026-11-28T16:33:51.338Z",
+  "slug": "selectivity-digest-cycle-evidence",
+  "headCommit": "3c1501ac1a064d142bac502802d3c0fcec0c88ba",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/feature-ladders.json",
+      "src/messaging/NotificationSelectivityGate.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "judgment": {
+    "version": 1,
+    "tierReasoning": "One count-only ledger row per daily digest cycle plus the digest ladder metrics; no behaviour, authority or config change.",
+    "trace": {
+      "path": ".instar/instar-dev-traces/2026-11-28T16-33-34-660Z-selectivity-digest-cycle-evidence-6ad43ab6.json",
+      "hash": "d2039aeab35ecdb23ed3d57f05fa2b4aedac2705",
+      "staged": true
+    },
+    "traceDiffers": false,
+    "artifact": {
+      "path": "upgrades/side-effects/selectivity-digest-cycle-evidence.md",
+      "hash": "d7601553021b502fb26dfcb34edcb757e59332b0",
+      "stagedHash": "d7601553021b502fb26dfcb34edcb757e59332b0"
+    },
+    "spec": null,
+    "template": "a33b7e354c2b936bb350305efddc4de1f6e1d658",
+    "headings": {
+      "1. Over-block": "missing",
+      "2. Under-block": "missing",
+      "3. Level-of-abstraction fit": "missing",
+      "4. Signal vs authority compliance": "missing",
+      "4b. Judgment-point check": "missing",
+      "5. Interactions": "missing",
+      "6. External surfaces": "missing",
+      "7. Multi-machine posture": "missing",
+      "8. Rollback cost": "missing",
+      "6b. Operator-surface quality": {
+        "present": true,
+        "chars": 57
+      },
+      "Second-pass review": {
+        "present": true,
+        "chars": 1170
+      }
+    },
+    "secondPassStatus": "required-concurred",
+    "perFileLines": [
+      {
+        "path": "src/data/feature-ladders.json",
+        "added": 1,
+        "deleted": 1,
+        "baseBlob": "eb3737d0dec73434ea07e20ea8f5d4fc6feb1f77",
+        "stagedBlob": "5a501ec798818643db269ade9e95d2bb197d7f0f"
+      },
+      {
+        "path": "src/messaging/NotificationSelectivityGate.ts",
+        "added": 11,
+        "deleted": 1,
+        "baseBlob": "9c44c8d1d59899465afaa178f956f6f3c741d0f8",
+        "stagedBlob": "a85e2a431b714d4048a9474e129630c75f570691"
+      }
+    ]
+  }
+}
