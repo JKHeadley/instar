@@ -315,13 +315,12 @@ describe('internal Telegram routes — lifeline ingress secret', () => {
       expect(res.body.reason).toBe('mismatch');
     });
 
-    it('a refusal writes the lifeline-restart signal (the 426 pattern)', async () => {
+    it('a refusal after arming does NOT write the lifeline-restart signal (an unverified caller cannot restart the lifeline)', async () => {
       const app = boot(dev);
       await forward(app, { secret: secret(), messageId: 1 });
-      await forward(app, { messageId: 2, lifelineVersion: '1.3.400' });
-      expect(readLifelineRestartSignal(stateDir)).toMatchObject({
-        requestedBy: 'server-lifeline-secret', previousVersion: '1.3.400', targetVersion: SERVER_VERSION,
-      });
+      const res = await forward(app, { messageId: 2, lifelineVersion: '1.3.400' });
+      expect(res.status).toBe(401);
+      expect(readLifelineRestartSignal(stateDir)).toBeNull();
     });
 
     it('a refused message replayed with the secret is applied exactly once', async () => {

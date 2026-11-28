@@ -553,23 +553,29 @@ describe('LifelineIngressGuard', () => {
       g.evaluate({}, 'telegram-forward');
       expect(signals.length).toBe(2);
     });
-    it('after arming: a refusal writes it, at most once per 24 hours', () => {
-      const g = make(true);
-      g.evaluate(good(), 'telegram-forward');
-      g.evaluate({}, 'telegram-forward', { lifelineVersion: '1.3.900' });
-      expect(signals).toEqual([{ previousVersion: '1.3.900' }]);
-      now += SIGNAL_GAP_ARMED_MS - 1;
-      g.evaluate({}, 'telegram-forward');
-      expect(signals.length).toBe(1);
-      now += 1;
-      g.evaluate({}, 'telegram-forward');
-      expect(signals.length).toBe(2);
+    it('after arming: an unverified request never writes it, refused or accepted, however much time passes', () => {
+      // Observe first, then enforce (the second guard reloads the first one's armed state).
+      for (const developmentAgent of [false, true]) {
+        signals = [];
+        const g = make(developmentAgent);
+        g.evaluate(good(), 'lifeline-proof');
+        const d = g.evaluate({}, 'telegram-forward', { lifelineVersion: '1.3.900' });
+        expect(d.action).toBe(developmentAgent ? 'refuse' : 'accept');
+        g.evaluate(wrong(), 'telegram-forward', { lifelineVersion: '1.3.900' });
+        g.evaluate({}, 'telegram-callback');
+        now += SIGNAL_GAP_ARMED_MS * 30;
+        g.evaluate({}, 'telegram-forward', { lifelineVersion: '1.3.900' });
+        expect(signals).toEqual([]);
+        expect(h(g).lastSignalAt).toBeNull();
+        // …and another writer acting on an unverified request gets no budget either.
+        expect(g.spendSignalBudget()).toBe(false);
+        expect(h(g).lastSignalAt).toBeNull();
+      }
     });
     it('the budget survives a server restart', () => {
-      const first = make(true);
-      first.evaluate(good(), 'telegram-forward');
+      const first = make(false);
       first.evaluate({}, 'telegram-forward');
-      const restarted = restart(first, true);
+      const restarted = restart(first, false);
       restarted.evaluate({}, 'telegram-forward');
       expect(signals.length).toBe(1);
     });

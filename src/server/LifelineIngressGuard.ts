@@ -78,10 +78,10 @@ export const EXIT_DEADLINE_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export const SIGNAL_GAP_UNARMED_MS = 12 * 60 * 60 * 1000;
 /**
- * Minimum gap AFTER arming. A secretless request is then almost never a
- * version problem (the lifeline has shown it sends the secret and re-reads a
- * stale one by itself), so one write a day is the whole budget — a caller with
- * only the Bearer token cannot drive lifeline restarts faster than that.
+ * Retained for callers that import it. AFTER arming an unverified request
+ * writes no restart signal at all (the lifeline has shown it sends the secret
+ * and re-reads a stale one by itself), so a caller with only the Bearer token
+ * cannot drive lifeline restarts.
  */
 export const SIGNAL_GAP_ARMED_MS = 24 * 60 * 60 * 1000;
 /** A lifeline that has not proven itself for this long is reported. */
@@ -591,11 +591,12 @@ export class LifelineIngressGuard {
 
     // Move a lifeline that is still running old code onto the current version.
     // A lifeline already on the server's version clears the signal without
-    // restarting. The budget is persisted and deliberately small — see the
-    // SIGNAL_GAP_* constants.
-    const gap = armed ? SIGNAL_GAP_ARMED_MS : SIGNAL_GAP_UNARMED_MS;
+    // restarting. The budget is persisted and deliberately small — see
+    // SIGNAL_GAP_UNARMED_MS. Once armed, the lifeline has proven it sends the
+    // secret, so an unverified request is not the lifeline and must not be
+    // able to restart it: no signal at all.
     const lastSignalMs = this.state.lastSignalAt ? Date.parse(this.state.lastSignalAt) : NaN;
-    if (!Number.isFinite(lastSignalMs) || nowMs - lastSignalMs >= gap) {
+    if (!armed && (!Number.isFinite(lastSignalMs) || nowMs - lastSignalMs >= SIGNAL_GAP_UNARMED_MS)) {
       try {
         const wrote = this.opts.writeRestartSignal({
           previousVersion: typeof info.lifelineVersion === 'string' ? info.lifelineVersion.slice(0, 64) : 'unknown',
@@ -620,13 +621,14 @@ export class LifelineIngressGuard {
   /**
    * Spend one unit of the persisted restart-signal budget on behalf of
    * another signal writer acting on an UNVERIFIED request (the route's 426
-   * path). True = the caller may write.
+   * path). True = the caller may write. Never once armed: an unverified
+   * request is then not the lifeline and gets no restart.
    */
   spendSignalBudget(): boolean {
     const nowMs = this.now();
-    const gap = this.state.armedAt !== null ? SIGNAL_GAP_ARMED_MS : SIGNAL_GAP_UNARMED_MS;
+    if (this.state.armedAt !== null) return false;
     const last = this.state.lastSignalAt ? Date.parse(this.state.lastSignalAt) : NaN;
-    if (Number.isFinite(last) && nowMs - last < gap) return false;
+    if (Number.isFinite(last) && nowMs - last < SIGNAL_GAP_UNARMED_MS) return false;
     this.state.lastSignalAt = new Date(nowMs).toISOString();
     this.persistSoon(nowMs);
     return true;
