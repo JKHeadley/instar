@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-27T21:40:37.742Z",
+  "slug": "project-registry-approved-anchors",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 36,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffProjectProgress.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 31,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

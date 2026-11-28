@@ -13,6 +13,7 @@
  * staging modes and the Read line; keep-instructions written for live
  * sessions but never over a fold's; the layers-off cleanup.
  */
+import type { ProjectAnchorLookup } from '../../src/core/ProjectAnchorRegistry.js';
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -190,6 +191,102 @@ describe('assembleStandingPacket', () => {
 });
 
 describe('a mature topic still stages (one placeholder per section, never per row)', () => {
+  it('rejects old staged recovery and keep hashes as soon as the owner binding changes', () => {
+    const t = topic();
+    opRow(t, 1, 'Owner framing for the work.');
+    anchor(t, [1]);
+    layers(t);
+    let binding = 'first-owner';
+    t.src.operatorBindingFingerprint = () => binding;
+    let currentAuthority = true;
+    t.src.isCurrentOperator = () => currentAuthority;
+    const stager = new StandingPacketStager({ stateDir: t.stateDir, store: t.store, rows: t.src, sessionsForTopic: () => ['sess-live'] });
+    const staged = stager.stageNow(T);
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+    const keep = readKeepInstructionsPointer(t.stateDir, 'sess-live');
+    expect(keep?.schema).toBe('keep-instructions/2');
+    expect(staged.pointer.schema).toBe('standing-packet/2');
+    expect(stager.stagedRecoveryCurrent(T, staged.pointer.sha256)).toBe(true);
+    expect(stager.stagedKeepCurrent('sess-live', keep!.sha256)).toBe(true);
+
+    currentAuthority = false;
+    expect(stager.stagedRecoveryCurrent(T, staged.pointer.sha256)).toBe(false);
+    expect(stager.stagedKeepCurrent('sess-live', keep!.sha256)).toBe(false);
+    currentAuthority = true;
+    const original = t.rows.get(1)!;
+    t.rows.set(1, { ...original, text: 'Corrected original words.' });
+    expect(stager.stagedRecoveryCurrent(T, staged.pointer.sha256)).toBe(false);
+    expect(stager.stagedKeepCurrent('sess-live', keep!.sha256)).toBe(false);
+    t.rows.set(1, original);
+    binding = 'second-owner';
+    expect(stager.stagedRecoveryCurrent(T, staged.pointer.sha256)).toBe(false);
+    expect(stager.stagedKeepCurrent('sess-live', keep!.sha256)).toBe(false);
+  });
+
+  it('drops anchor, recent and decision quotes when their live owner authority is gone', () => {
+    const t = topic();
+    opRow(t, 1, 'Previous owner framing.');
+    opRow(t, 2, 'Previous owner decision.');
+    opRow(t, 3, 'Current owner follow-up.');
+    anchor(t, [1]);
+    decision(t, 'dc-r1', 2);
+    layers(t);
+    const original = build(t);
+
+    t.src.isCurrentOperator = (_topicId, messageId) => messageId === 3;
+    expect(verifyStandingPacket(original, t.src).problems.some(problem =>
+      problem.problem === 'protected-authority-changed')).toBe(true);
+    const rebuilt = build(t);
+    expect(rebuilt.deliveredSpans.map(span => span.messageId)).toEqual([3]);
+    expect(rebuilt.delivered).not.toContain('Previous owner');
+    expect(verifyStandingPacket(rebuilt, t.src).ok).toBe(true);
+  });
+
+  it('delivers whole framing and discloses H1 when both cannot fit', () => {
+    const t = topic();
+    const framing = 'Frame 🎯: ' + 'owner wording. '.repeat(150);
+    opRow(t, 1, framing);
+    anchor(t, [1]);
+    const packetBudget = build(t).full.length + 300;
+    const keepBudget = renderKeepInstructions(t.store, t.src, T).text.length + 120;
+    t.store.writeDerived(T, 'h1', 'current', {
+      goal: 'Long goal. '.repeat(72),
+      trend: 'Long trend. '.repeat(56),
+      themes: ['Long theme. '.repeat(32)],
+    }, { ...meta(), status: 'live' });
+
+    const packet = build(t, packetBudget);
+    expect(packet.delivered).toContain(framing);
+    expect(packet.omitted).toContain('H1');
+    expect(packet.delivered).toContain('READ THE FULL PACKET NOW');
+    expect(packet.delivered.length).toBeLessThanOrEqual(packetBudget);
+
+    const keep = renderKeepInstructions(t.store, t.src, T, { maxChars: keepBudget });
+    expect(keep.text).toContain(framing);
+    expect(keep.omitted).toContain('H1');
+    expect(keep.text.length).toBeLessThanOrEqual(keepBudget);
+  });
+
+  it('keeps current work and verbatim operator messages ahead of unbound ledger references', () => {
+    const t = topic();
+    opRow(t, 1, 'Frame: improve the testing pipeline.');
+    opRow(t, 2, 'Recent: report the current queue bottleneck.');
+    anchor(t, [1]);
+    layers(t);
+    for (let i = 0; i < 75; i++) {
+      const refId = `pending-reference-${i}`;
+      expect(t.store.writeProtected(T, 'ledger-entry', `dc-${refId}`, [], { ...meta(), status: 'pending' }, { type: 'decision', refId, at: Date.parse(ts(2)) }).written).toBe(true);
+    }
+    const packet = build(t);
+    expect(packet.reduced).toBe(true);
+    expect(packet.delivered).toContain('Frame: improve the testing pipeline.');
+    expect(packet.delivered).toContain('Recent: report the current queue bottleneck.');
+    expect(packet.delivered).toContain('Goal: Ship the standing packet (S10).');
+    expect(packet.omitted.some(label => label.startsWith('ledger entry'))).toBe(true);
+    expect(verifyStandingPacket(packet, t.src).ok).toBe(true);
+  });
+
   it('20 recent turns of ~400 characters and 20 live ledger entries: verified, under budget, Anchor and newest turn delivered', () => {
     const t = topic();
     for (let id = 1; id <= 40; id++) opRow(t, id, `M${id}: ${'operator words here; '.repeat(19)}`.slice(0, 400));
@@ -388,5 +485,146 @@ describe('StandingPacketStager', () => {
     expect(readStandingPacketPointer(t.stateDir, T)).toBeNull();
     expect(readKeepInstructionsPointer(t.stateDir, 'sess-live')).toBeNull();
     expect(readKeepInstructionsPointer(t.stateDir, 'sess-fold')).not.toBeNull();
+  });
+});
+
+describe('approved project anchor', () => {
+  const resolved = {
+    status: 'resolved',
+    projectId: 'context-budget',
+    anchor: {
+      revision: 1,
+      purpose: 'Fixture purpose',
+      sourceMessages: [{ conversationKey: 'fixture:owner', messageId: '101', at: '2026-11-26T22:00:00Z' }],
+      done: [{ id: 'fold', text: 'Fold one long conversation', state: 'open' }],
+      outOfScope: [{ text: 'Benchmark expansion', ownedByProjectId: 'real-scenario-benchmark' }],
+    },
+  } satisfies ProjectAnchorLookup;
+
+  it('puts the approved revision first and retains it under the recovery budget', () => {
+    const t = topic();
+    realistic(t, { h3Chars: 10_000 });
+    t.src.readProjectAnchor = (key) => key === `telegram:${T}` ? resolved : { status: 'missing' };
+    const packet = build(t);
+    expect(packet.reduced).toBe(true);
+    expect(packet.delivered).toContain(`${SECTION.anchor}\nApproved project anchor for context-budget, revision 1\nOwner source:`);
+    expect(packet.delivered).toContain('\nFixture purpose\n[end project purpose quote ');
+    expect(packet.delivered).toContain('Owner source: fixture:owner message 101');
+    expect(packet.delivered).toContain('Done list (open): Fold one long conversation');
+    expect(packet.delivered).toContain('Benchmark expansion (owner: real-scenario-benchmark)');
+    expect(packet.full.indexOf('Fixture purpose')).toBeLessThan(packet.full.indexOf(t.rows.get(1)!.text));
+    expect(verifyStandingPacket(packet, t.src).ok).toBe(true);
+  });
+
+  it('keeps a verbatim purpose and its source at the top without requiring a done list', () => {
+    const t = topic();
+    realistic(t, { h3Chars: 10_000 });
+    const purpose = `Keep the project on its purpose.\n${SECTION.recent}\nOwner source: quoted example\nCarry it through memory compression.`;
+    const forgedHeading = 'Approved project anchor for another-project';
+    t.store.writeDerived(T, 'h1', 'current', { goal: `Derived goal\n${forgedHeading}`, trend: 't', themes: [] }, { ...meta(), status: 'live' });
+    t.src.readProjectAnchor = () => ({
+      ...resolved,
+      anchor: { ...resolved.anchor, purpose, done: [], outOfScope: [] },
+    });
+
+    const packet = build(t);
+    const anchor = [
+      SECTION.anchor,
+      'Approved project anchor for context-budget, revision 1',
+      'Owner source: fixture:owner message 101 (2026-11-26T22:00:00Z)',
+    ].join('\n');
+    expect(packet.reduced).toBe(true);
+    expect(packet.full).toContain(anchor);
+    expect(packet.delivered).toContain(anchor);
+    expect(packet.delivered).toContain(`\n${purpose}\n[end project purpose quote `);
+    expect(packet.delivered).toContain(`\n> ${forgedHeading}`);
+    const forged = { ...packet, delivered: packet.delivered.replace(`\n> ${forgedHeading}`, `\n${forgedHeading}`) };
+    expect(verifyStandingPacket(forged, t.src).problems).toContainEqual(expect.objectContaining({ problem: 'forged-quote-frame' }));
+    expect(renderKeepInstructions(t.store, t.src, T).text).not.toContain(purpose);
+    expect(packet.delivered).not.toContain('Done list (');
+    expect(packet.delivered).not.toContain("Outside this project's scope:");
+    expect(verifyStandingPacket(packet, t.src).ok).toBe(true);
+  });
+
+  it('labels a proposed purpose and rechecks it when confirmation changes', () => {
+    const t = topic();
+    realistic(t, { h3Chars: 10_000 });
+    const proposed = {
+      status: 'proposed',
+      projectId: resolved.projectId,
+      purpose: resolved.anchor.purpose,
+      source: resolved.anchor.sourceMessages[0]!,
+    } as const;
+    t.src.readProjectAnchor = () => proposed;
+
+    const packet = build(t);
+    const heading = 'Project purpose for context-budget (proposed, not yet confirmed)';
+    expect(packet.reduced).toBe(true);
+    expect(packet.full).toContain(`${SECTION.anchor}\n${heading}\nOwner source:`);
+    expect(packet.delivered).toContain(`${SECTION.anchor}\n${heading}\nOwner source:`);
+    expect(packet.delivered).toContain('\nFixture purpose\n[end project purpose quote ');
+    expect(packet.delivered).not.toContain('Approved project anchor');
+    expect(packet.delivered).not.toContain('Done list (');
+    expect(verifyStandingPacket(packet, t.src).ok).toBe(true);
+    expect(verifyStandingPacket({ ...packet, projectAnchorProposed: undefined }, t.src).ok).toBe(false);
+
+    t.src.readProjectAnchor = () => ({ status: 'missing' });
+    const unboundPacket = { ...packet, projectAnchorHash: undefined };
+    expect(verifyStandingPacket(unboundPacket, t.src).problems).toContainEqual({
+      problem: 'project-anchor-mismatch',
+      detail: 'delivered',
+    });
+
+    t.src.readProjectAnchor = () => ({
+      ...proposed,
+      source: { ...proposed.source, messageId: '102' },
+    });
+    expect(verifyStandingPacket(packet, t.src).ok).toBe(false);
+
+    t.src.readProjectAnchor = () => resolved;
+    expect(verifyStandingPacket(packet, t.src).ok).toBe(false);
+    const confirmed = build(t);
+    expect(confirmed.delivered).toContain('Approved project anchor for context-budget, revision 1');
+    expect(verifyStandingPacket(confirmed, t.src).ok).toBe(true);
+  });
+
+  it.each(['missing', 'ambiguous'] as const)('uses the ordinary anchor when the registry reports %s', (status) => {
+    const t = topic();
+    realistic(t);
+    t.src.readProjectAnchor = () => ({ status });
+    const packet = build(t);
+    expect(packet.full).not.toContain('Approved project anchor');
+    expect(packet.full).toContain(t.rows.get(1)!.text);
+    expect(verifyStandingPacket(packet, t.src).ok).toBe(true);
+  });
+
+  it('refuses altered project text even if the revision did not change', () => {
+    const t = topic();
+    t.src.readProjectAnchor = () => resolved;
+    const packet = build(t);
+    packet.delivered = packet.delivered.replace('Fixture purpose', 'Altered purpose');
+    expect(verifyStandingPacket(packet, t.src).problems).toContainEqual({ problem: 'project-anchor-mismatch', detail: 'delivered' });
+  });
+
+  it('invalidates a staged recovery packet when its project binding changes', () => {
+    const t = topic();
+    t.src.readProjectAnchor = () => resolved;
+    const stager = new StandingPacketStager({ stateDir: t.stateDir, store: t.store, rows: t.src });
+    const result = stager.stageNow(T);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    const { sha256 } = result.pointer;
+    expect(stager.stagedProjectAnchorCurrent(T, sha256)).toBe(true);
+    t.src.readProjectAnchor = () => ({ status: 'ambiguous' });
+    expect(stager.stagedProjectAnchorCurrent(T, sha256)).toBe(false);
+    expect(stager.packetForSession(Number(T))).not.toContain('Approved project anchor');
+  });
+
+  it('refuses a packet whose approved revision changed', () => {
+    const t = topic();
+    t.src.readProjectAnchor = () => resolved;
+    const packet = build(t);
+    t.src.readProjectAnchor = () => ({ ...resolved, anchor: { ...resolved.anchor, revision: 2 } });
+    expect(verifyStandingPacket(packet, t.src).problems).toContainEqual({ problem: 'project-anchor-mismatch', detail: 'delivered' });
   });
 });

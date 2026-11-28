@@ -206,6 +206,45 @@ export class MemoryPrivacy {
     return createHash('sha256').update(`${this.state.baselineDone ? 1 : 0}\n${this.ownerUserId() ?? ''}\n${this.deps.reachable().telegramOwnerId ?? ''}\n${keys}`).digest('hex');
   }
 
+  /**
+   * TopicMemory may retain a Telegram sender ID without a resolved profile ID.
+   * Recover the verified owner's corpus label only when both identity records agree.
+   */
+  isCorpusOperator(senderKey: string | null, personId: string | null, directTelegram: boolean): boolean {
+    const owner = this.ownerUserId();
+    if ((owner === null || owner === OPERATOR_PERSON_ID) && this.deps.config().ownerUserId) return false;
+    if (this.isOwnerSender(senderKey, personId)) return true;
+    // Historical operator keys are useful before there is a verified owner.
+    // Once a real owner exists, a previously inferred operator cannot outlive a transfer.
+    if ((owner === null || owner === OPERATOR_PERSON_ID) && this.isOperator(senderKey)) return true;
+    if (!directTelegram || personId !== null || senderKey === null) return false;
+    return senderKey === this.corpusOwnerTelegramKey();
+  }
+
+  private corpusOwnerTelegramKey(): string | null {
+    const telegramOwner = this.deps.reachable().telegramOwnerId;
+    if (telegramOwner == null) return null;
+    const ownerId = this.ownerUserId();
+    const profile = this.deps.users().find(user => user.id === ownerId);
+    return profile?.telegramUserId === telegramOwner ? `telegram:${telegramOwner}` : null;
+  }
+
+  corpusOperatorBindingFingerprint(): string {
+    const owner = this.ownerUserId();
+    const configured = this.deps.config().ownerUserId ?? null;
+    const usesInferredOperator = !configured && (owner === null || owner === OPERATOR_PERSON_ID);
+    const matchingProfiles = usesInferredOperator
+      ? this.deps.users()
+        .filter(user => profileKeys(user).some(key => this.state.operatorKeys.includes(key)))
+        .map(user => user.id)
+        .sort()
+      : [];
+    return createHash('sha256').update(JSON.stringify([
+      'corpus-owner-telegram-v1', this.operatorBindingFingerprint(), configured,
+      this.corpusOwnerTelegramKey(), matchingProfiles,
+    ])).digest('hex');
+  }
+
   /** True when this sender is the operator recorded at baseline. */
   isOperator(senderKey: string | null): boolean {
     if (senderKey === null) return false;

@@ -15,6 +15,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { startStandingPacketAuthority } from '../fixtures/standing-packet-authority.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
@@ -89,10 +91,19 @@ describe('writeKeepInstructions', () => {
 describe('pre-compact-steer.sh (installed hook)', () => {
   it('prints the staged text exactly, and keeps printing it on later compactions (standing)', async () => {
     writeKeepInstructions(stateDir, { instarSessionId: IID, text: TEXT, source: 'standing-packet' });
-    const a = await run(payload());
-    expect(a).toEqual({ out: TEXT, code: 0 });
-    const b = await run(payload({ trigger: 'manual' }));
-    expect(b).toEqual({ out: TEXT, code: 0 });
+    expect(await run(payload())).toEqual({ out: '', code: 0 });
+    const packetHash = createHash('sha256').update(TEXT).digest('hex');
+    const authority = await startStandingPacketAuthority(IID, packetHash);
+    try {
+      fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(authority.config));
+      expect(await run(payload())).toEqual({ out: TEXT, code: 0 });
+      expect(await run(payload({ trigger: 'manual' }))).toEqual({ out: TEXT, code: 0 });
+      authority.revoke();
+      expect(await run(payload())).toEqual({ out: '', code: 0 });
+      expect(authority.requests).toHaveLength(3);
+    } finally {
+      await authority.close();
+    }
   });
 
   it('prints nothing and exits 0 when there is nothing staged', async () => {

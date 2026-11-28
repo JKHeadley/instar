@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "slug": "standing-packet-owner-coverage",
+  "sessionId": "e063953d-797f-449f-9fa8-ba4f4630c54a",
+  "timestamp": "2026-11-27T22:08:23.578Z",
+  "artifactPath": "upgrades/side-effects/standing-packet-owner-coverage.md",
+  "artifactSha256": "dcdcae9f2453921445a30b0f91900df22cde203530e9e9db6d88dbd5ef82bd43",
+  "specPath": "docs/specs/standing-packet-owner-coverage.md",
+  "coveredFiles": [
+    "src/server/CapabilityIndex.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

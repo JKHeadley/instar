@@ -1,3 +1,6 @@
+import { buildProjectCoverage } from '../core/ChiefOfStaffProjectProgress.js';
+import { projectAnchorOwnerBinding, isProjectAnchorSourceMessage, isValidProjectAnchor, readVerifiedProjectAnchorSource } from '../core/ProjectAnchorRegistry.js';
+import { restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
 import { pendingUpdateRestartTarget, readRestartRequestFile } from '../core/restartRequestFile.js';
 import { previewOwnerBindingBatch } from '../core/ChiefOfStaffBindingBatch.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
@@ -26,9 +29,7 @@ import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets
 import { listChunks, readChunk, isSafeChunkTopic, isSafeChunkKey } from '../monitoring/contextLayers/chunkLookup.js';
 import { userCorpusView } from '../monitoring/contextLayers/userCorpus.js';
 import { anchorLedgerView } from '../monitoring/contextLayers/anchorLedger.js';
-import { standingPacketView } from '../monitoring/contextLayers/standingPacket.js';
 import { CodexSeedService } from '../monitoring/contextLayers/codexSeed.js';
-import { packetRowSource } from '../monitoring/contextLayers/standingPacketBoot.js';
 import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
 import { h3SummarizeView } from '../monitoring/contextLayers/h3Builder.js';
 import { TopicSummaryTable, H3_OWNS_REASON } from '../memory/TopicSummaryTable.js';
@@ -10166,10 +10167,58 @@ export function createRoutes(ctx: RouteContext): Router {
     let intent: ReturnType<NonNullable<typeof ctx.topicIntentStore>['read']> | null = null;
     try { intent = ctx.topicIntentStore ? ctx.topicIntentStore.read(Number(raw)) : null; } catch { intent = null; /* @silent-fallback-ok — without the topic-intent file the live set has no phase and no re-references (the anchor route's behaviour) */ }
     try {
-      res.json({ topicId: Number(raw), ...standingPacketView(stager, ctx.config.stateDir, raw, packetRowSource(ctx.topicMemory), intent, ctx.contextLayers.store) });
+      res.json({ topicId: Number(raw), ...stager.view(raw, intent) });
     } catch (e) { // @silent-fallback-ok — reported to the caller as a 500 with its reason
       res.status(500).json({ error: 'standing packet view failed', detail: operatorError(e, ctx.config.stateDir).slice(0, 200) });
     }
+  });
+  // Claude Code's local recovery hook confirms the exact staged packet still
+  // matches the approved project anchor before forwarding it.
+  router.get('/topic/:id/standing-packet/anchor-current', (req, res) => {
+    const topicKey = String(req.params.id ?? '');
+    const packetHash = String(req.query.packetHash ?? '');
+    if (!/^\d{1,15}$/.test(topicKey) || !/^[a-f0-9]{64}$/.test(packetHash)) {
+      res.status(400).json({ current: false });
+      return;
+    }
+    const stager = ctx.contextLayers?.standingPacket();
+    res.json({ current: stager?.stagedProjectAnchorCurrent(topicKey, packetHash) ?? false });
+  });
+  router.get('/topic/:id/standing-packet/recovery-current', (req, res) => {
+    const topicKey = String(req.params.id ?? '');
+    const packetHash = String(req.query.packetHash ?? '');
+    if (!/^\d{1,15}$/.test(topicKey) || !/^[a-f0-9]{64}$/.test(packetHash)) {
+      res.status(400).json({ current: false });
+      return;
+    }
+    res.json({ current: ctx.contextLayers?.standingPacket()?.stagedRecoveryCurrent(topicKey, packetHash) ?? false });
+  });
+  router.get('/topic/:id/standing-packet/full', async (req, res) => {
+    const topicKey = String(req.params.id ?? '');
+    if (!/^\d{1,15}$/.test(topicKey)) { res.status(400).json({ error: 'invalid-topic' }); return; }
+    const topicId = Number(topicKey);
+    const rawToken = req.get('X-Instar-Bind-Token');
+    const bind = rawToken ? ctx.conversationBindAuth?.verify(rawToken) : null;
+    const destination = bind?.bootstrapConversationIds.includes(topicId)
+      ? ctx.sessionManager?.listRunningSessions?.().find(s => s.tmuxSession === bind.sessionName && s.telegramTopicId === topicId)
+      : undefined;
+    if (!rawToken || !destination ||
+        !await ctx.sessionManager?.matchesCurrentConversationBindToken?.(destination.tmuxSession, destination.id, rawToken)) {
+      res.status(403).json({ error: 'conversation-bind-refused' });
+      return;
+    }
+    const staged = ctx.contextLayers?.standingPacket()?.stageNow(topicKey);
+    if (!staged?.ok || !staged.packet.ownerBinding) { res.status(503).json({ error: 'standing-packet-unavailable' }); return; }
+    res.set('Cache-Control', 'no-store').type('text/plain').send(staged.packet.full);
+  });
+  router.get('/standing-packet/keep-current/:sessionId', (req, res) => {
+    const sessionId = String(req.params.sessionId ?? '');
+    const packetHash = String(req.query.packetHash ?? '');
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) || !/^[a-f0-9]{64}$/.test(packetHash)) {
+      res.status(400).json({ current: false });
+      return;
+    }
+    res.json({ current: ctx.contextLayers?.standingPacket()?.stagedKeepCurrent(sessionId, packetHash) ?? false });
   });
   // context-budget-layered-summaries §9.6 Codex column (Phase 1 S17): the Codex
   // next-prompt seed. The per-prompt hook asks, on a Codex prompt naming a topic,
@@ -10178,8 +10227,8 @@ export function createRoutes(ctx: RouteContext): Router {
   // the topic's standing packet is built, verified and returned in its disclosure
   // marker. The hook prints it, then acknowledges (the ack writes the seeded
   // marker, a record only); "already seeded" is read from the rollout itself,
-  // so a delivery Codex dropped is retried once. An unverified packet is never returned. Bearer only; 503 when the
-  // layers are off.
+  // so a delivery Codex dropped is retried once. An unverified packet is never returned.
+  // A proposed purpose also requires a bind token from the live destination session.
   let codexSeedSvc: { stager: unknown; svc: import('../monitoring/contextLayers/codexSeed.js').CodexSeedService } | null = null;
   const codexSeed = () => {
     const stager = ctx.contextLayers?.standingPacket() ?? null;
@@ -10198,19 +10247,43 @@ export function createRoutes(ctx: RouteContext): Router {
           },
           stageNow: (topic) => {
             const r = stager.stageNow(topic);
-            return r.ok ? { ok: true, delivered: r.packet.delivered, sha256: r.pointer.sha256 } : { ok: false, reason: r.reason };
+            return r.ok ? {
+              ok: true, delivered: r.packet.delivered, sha256: r.pointer.sha256,
+              projectAnchorProposed: r.packet.projectAnchorProposed,
+            } : { ok: false, reason: r.reason };
           },
         }),
       };
     }
     return codexSeedSvc.svc;
   };
-  router.post('/context-budget/codex-seed', (req, res) => {
+  router.post('/context-budget/codex-seed', async (req, res) => {
     const svc = codexSeed();
     if (!svc) { res.status(503).json({ error: 'context-budget standing packet not enabled on this agent', enableWith: 'contextBudget.enabled' }); return; }
     const b = (req.body ?? {}) as Record<string, unknown>;
     try {
-      res.json(svc.offer({ topicId: b.topicId, sessionId: b.sessionId, transcriptPath: b.transcriptPath, framework: b.framework, promptSha256: b.promptSha256 }));
+      const token = req.get('X-Instar-Bind-Token');
+      const topicId = typeof b.topicId === 'string' || typeof b.topicId === 'number' ? Number(b.topicId) : NaN;
+      const bind = token && Number.isSafeInteger(topicId) ? ctx.conversationBindAuth?.verify(token) : null;
+      const destination = bind && bind.bootstrapConversationIds.includes(topicId) ?
+        (ctx.sessionManager?.listRunningSessions?.() ?? []).find((s) =>
+          s.tmuxSession === bind.sessionName && s.telegramTopicId === topicId &&
+          s.framework === CODEX_CLI_FRAMEWORK && s.claudeSessionId === b.sessionId) : undefined;
+      const offer = svc.offer({ topicId: b.topicId, sessionId: b.sessionId, transcriptPath: b.transcriptPath, framework: b.framework, promptSha256: b.promptSha256, allowProjectProposal: !!destination });
+      if (offer.deliver && offer.projectProposalPacketHash) {
+        if (!destination || !token ||
+          !await ctx.sessionManager?.matchesCurrentConversationBindToken?.(destination.tmuxSession, destination.id, token) ||
+          !ctx.contextLayers?.standingPacket()?.stagedProjectAnchorCurrent(String(topicId), offer.projectProposalPacketHash)) {
+          svc.finishProjectProposalOffer(false);
+          res.json({ deliver: false, reason: 'not-this-topic-session' });
+          return;
+        }
+        svc.finishProjectProposalOffer(true);
+        const { deliver, epoch, carrier, text } = offer;
+        res.json({ deliver, epoch, carrier, text });
+        return;
+      }
+      res.json(offer);
     } catch (e) {
       res.status(500).json({ deliver: false, error: 'codex seed failed', detail: operatorError(e, res.app?.locals?.stateDir).slice(0, 200) });
     }
@@ -10273,10 +10346,15 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const cosTopic = ctx.state.get<number>('chief-of-staff-topic');
+    const conversationKey = typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null;
+    const completeProjects = ctx.chiefOfStaffLoop.projectsSummaryComplete?.() ?? null;
+    const projects = completeProjects ?? ctx.chiefOfStaffLoop.projectsSummary();
     res.json({
-      ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects: ctx.chiefOfStaffLoop.projectsSummary(),
-      // §1.4 surfaces: the CoS conversation's key (null until the topic exists) and the owner's display name.
-      conversationKey: typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null,
+      ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects,
+      projectCoverage: ctx.initiativeTracker && completeProjects
+        ? buildProjectCoverage(completeProjects, ctx.initiativeTracker.list({ kind: 'project' }), conversationKey)
+        : null,
+      conversationKey,
       displayName: String(ctx.liveConfig?.get<string | undefined>('chiefOfStaff.displayName', undefined) || 'Chief of Staff'),
     });
   });
@@ -26659,6 +26737,60 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const items = ctx.initiativeTracker.list({ kind: 'project' });
     res.json({ items, count: items.length });
+  });
+
+  router.put('/projects/:id/alignment-anchor', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session')) !== true) {
+      res.status(403).json({ error: 'dashboard-operator-session-required' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body, ['expectedVersion', 'conversationKey', 'sourceMessage'])) return;
+    const { expectedVersion, conversationKey, sourceMessage } = req.body ?? {};
+    const tracker = ctx.initiativeTracker;
+    if (!tracker || ctx.state.readOnly || (ctx.coordinator?.enabled && !ctx.coordinator.holdsLease())) {
+      res.status(503).json({ error: 'project-registry-writer-unavailable' });
+      return;
+    }
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1 || typeof conversationKey !== 'string' ||
+      !/^telegram:[1-9]\d*$/.test(conversationKey) || !isProjectAnchorSourceMessage(sourceMessage)) {
+      res.status(400).json({ error: 'invalid-project-anchor' });
+      return;
+    }
+    const matches = tracker.list({ kind: 'project' }).filter((project) =>
+      project.telegramTopicId === conversationKey.slice('telegram:'.length));
+    if (matches.length !== 1 || matches[0]!.id !== req.params.id) {
+      res.status(409).json({ error: 'project-membership-is-missing-or-ambiguous' });
+      return;
+    }
+    const project = matches[0]!;
+    if (project.version !== expectedVersion) {
+      res.status(409).json({ error: 'project-anchor-stale-or-not-stored' });
+      return;
+    }
+    const currentOwner = ctx.telegram?.getVerifiedOwner();
+    const ownerBinding = projectAnchorOwnerBinding(currentOwner);
+    if (ownerBinding && project.approvedProjectAnchor?.approvedOwnerBinding === ownerBinding) {
+      res.status(409).json({ error: 'project-anchor-already-exists' });
+      return;
+    }
+    const anchor = {
+      revision: (project.approvedProjectAnchorRevision ?? project.approvedProjectAnchor?.anchor.revision ?? 0) + 1,
+      purpose: readVerifiedProjectAnchorSource(ctx.telegram ?? undefined, sourceMessage),
+      sourceMessages: [sourceMessage],
+      done: [],
+      outOfScope: [],
+    };
+    if (currentOwner === undefined || !ownerBinding || !isValidProjectAnchor(anchor)) {
+      res.status(409).json({ error: 'project-anchor-owner-source-unverified' });
+      return;
+    }
+    try {
+      const saved = await tracker.approveProjectAnchor(req.params.id, expectedVersion, conversationKey, anchor, currentOwner);
+      res.json({ projectId: saved.id, revision: anchor.revision, projectVersion: saved.version });
+    } catch {
+      res.status(409).json({ error: 'project-anchor-stale-or-not-stored' });
+    }
   });
 
   router.get('/projects/:id', async (req, res) => {

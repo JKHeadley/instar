@@ -10,15 +10,19 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { createConversationBindAuth } from '../../src/core/conversationBindToken.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { readKeepInstructionsPointer } from '../../src/monitoring/keepInstructions.js';
 import { buildContextLayers } from '../../src/monitoring/contextLayers/contextLayersBoot.js';
 import { wireStandingPacket } from '../../src/monitoring/contextLayers/standingPacketBoot.js';
-import { readStandingPacketPointer } from '../../src/monitoring/contextLayers/standingPacket.js';
+import { readProjectAnchorFixture } from '../fixtures/project-standing-anchor.js';
+import { readStandingPacketPointer, type ReadProjectAnchor } from '../../src/monitoring/contextLayers/standingPacket.js';
 import { rowRefFor } from '../../src/monitoring/contextLayers/LayerStore.js';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -40,7 +44,7 @@ describe('standing packet — real AgentServer', () => {
     for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: OP });
   });
 
-  async function boot(o: { layers: boolean }) {
+  async function boot(o: { layers: boolean; readProjectAnchor?: ReadProjectAnchor; operatorBindingFingerprint?: () => string; currentSession?: () => boolean; currentOwner?: () => boolean }) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-it-')); dirs.push(root);
     const stateDir = path.join(root, '.instar');
     fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
@@ -50,19 +54,27 @@ describe('standing packet — real AgentServer', () => {
       projectName: 'sp-it', projectDir: root, stateDir, port: 0, authToken: TOKEN, requestTimeoutMs: 10000, version: '0.0.0',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
-      messaging: [], monitoring: {}, updates: {}, secrets: { forceFileKey: true },
+      messaging: [], monitoring: { deliveryFailureSentinel: { enabled: false } }, updates: {}, secrets: { forceFileKey: true },
     } as unknown as InstarConfig;
-    const sessions = [{ id: 'inst-1', telegramTopicId: T, framework: 'claude-code' }];
-    const sessionManager = { listRunningSessions: () => sessions, getCachedRunningSessions: () => ({ count: 0, sessions: [] }), getSession: () => null, getSessionById: () => undefined, setClaudeSessionId: () => undefined };
+    const sessions = [{ id: 'inst-1', telegramTopicId: T, framework: 'claude-code', tmuxSession: 'fixture-session' }];
+    const sessionManager = Object.assign(new EventEmitter(), {
+      listRunningSessions: () => sessions,
+      getCachedRunningSessions: () => ({ count: 0, sessions: [] }),
+      getSession: () => null,
+      getSessionById: () => undefined,
+      setClaudeSessionId: () => undefined,
+      matchesCurrentConversationBindToken: async () => o.currentSession?.() === true,
+    });
     const topicMemory = new TopicMemory(stateDir); await topicMemory.open(); mems.push(topicMemory);
     topicMemory.insertMessage({ messageId: 1, topicId: T, text: WORDS, fromUser: true, timestamp: new Date(Date.UTC(2026, 10, 10, 10)).toISOString(), sessionName: null });
     topicMemory.insertMessage({ messageId: 2, topicId: T, text: 'second operator turn', fromUser: true, timestamp: new Date(Date.UTC(2026, 10, 10, 10, 2)).toISOString(), sessionName: null });
     const layers = o.layers ? buildContextLayers({ stateDir, authToken: TOKEN }) : undefined;
-    if (layers) { const s = wireStandingPacket({ layers, stateDir, topicMemory, sessions: () => sessions, debounceMs: 60_000 }); stops.push(() => s.stop()); }
-    const server = new AgentServer({ config, sessionManager: sessionManager as never, state: new StateManager(stateDir), topicMemory, contextLayers: layers });
+    if (layers) { const s = wireStandingPacket({ layers, stateDir, topicMemory, readProjectAnchor: o.readProjectAnchor, isOperator: o.currentOwner ? () => o.currentOwner!() : undefined, operatorBindingFingerprint: o.operatorBindingFingerprint, sessions: () => sessions, debounceMs: 60_000 }); stops.push(() => s.stop()); }
+    const bindAuth = createConversationBindAuth(stateDir);
+    const server = new AgentServer({ config, conversationBindAuth: bindAuth, sessionManager: sessionManager as never, state: new StateManager(stateDir), topicMemory, contextLayers: layers });
     await server.start();
     servers.push(server);
-    return { server, layers, stateDir };
+    return { server, layers, stateDir, bindAuth };
   }
 
   const auth = (r: request.Test) => r.set('Authorization', `Bearer ${TOKEN}`);
@@ -100,6 +112,71 @@ describe('standing packet — real AgentServer', () => {
     expect(view.body.verification.problems).toContain('protected-hash-mismatch');
     const layers = await auth(request(app).get('/context-budget/layers'));
     expect(layers.body.standingPacket).toMatchObject({ verifyFailed: 1, staged: 0 });
+  });
+
+  it('confirms only the current staged project anchor to the authenticated recovery hook', async () => {
+    let bound = true;
+    const b = await boot({
+      layers: true,
+      readProjectAnchor: (key) => bound ? readProjectAnchorFixture(key) : { status: 'ambiguous' },
+    });
+    const staged = b.layers!.standingPacket()!.stageNow(String(T));
+    if (!staged.ok) throw new Error(staged.reason);
+    const url = `/topic/${T}/standing-packet/anchor-current?packetHash=${staged.pointer.sha256}`;
+    const app = b.server.getApp();
+    expect((await request(app).get(url)).status).toBe(401);
+    expect((await auth(request(app).get(url))).body).toEqual({ current: true });
+    const view = () => auth(request(app).get(`/topic/${T}/standing-packet`));
+    expect((await view()).body.projectAnchor).toEqual({ verified: true, stagedCurrent: true });
+    bound = false;
+    expect((await auth(request(app).get(url))).body).toEqual({ current: false });
+    expect((await view()).body.projectAnchor).toEqual({ verified: false, stagedCurrent: false });
+  });
+
+  it('authenticates recovered and keep hash checks and rejects both after owner rotation', async () => {
+    let owner = 'first-owner';
+    const b = await boot({ layers: true, operatorBindingFingerprint: () => owner });
+    const staged = b.layers!.standingPacket()!.stageNow(String(T));
+    if (!staged.ok) throw new Error(staged.reason);
+    const keep = readKeepInstructionsPointer(b.stateDir, 'inst-1')!;
+    const urls = [
+      `/topic/${T}/standing-packet/recovery-current?packetHash=${staged.pointer.sha256}`,
+      `/standing-packet/keep-current/inst-1?packetHash=${keep.sha256}`,
+    ];
+    const app = b.server.getApp();
+    for (const url of urls) {
+      expect((await request(app).get(url)).status).toBe(401);
+      expect((await auth(request(app).get(url))).body).toEqual({ current: true });
+    }
+    owner = 'second-owner';
+    for (const url of urls) expect((await auth(request(app).get(url))).body).toEqual({ current: false });
+  });
+
+  it('rebuilds the full continuation only for the current bound session', async () => {
+    let currentSession = true;
+    let currentOwner = true;
+    const b = await boot({
+      layers: true, operatorBindingFingerprint: () => currentOwner ? 'first' : 'second',
+      currentOwner: () => currentOwner, currentSession: () => currentSession,
+    });
+    const store = b.layers!.store;
+    store.writeProtected(String(T), 'anchor', 'current', [rowRefFor(1, WORDS)],
+      { ...meta, status: 'anchored' }, { at: [Date.now()] });
+    const app = b.server.getApp();
+    const url = `/topic/${T}/standing-packet/full`;
+    const read = (token: string) => auth(request(app).get(url)).set('X-Instar-Bind-Token', token);
+    const token = b.bindAuth.mint('fixture-session', [T]);
+    expect((await auth(request(app).get(url))).status).toBe(403);
+    expect((await read(b.bindAuth.mint('fixture-session', [T + 1]))).status).toBe(403);
+    expect((await read(token)).text).toContain(WORDS);
+
+    currentOwner = false;
+    const renewed = await read(token);
+    expect(renewed.status).toBe(200);
+    expect(renewed.text).not.toContain(WORDS);
+    expect(renewed.headers['cache-control']).toBe('no-store');
+    currentSession = false;
+    expect((await read(token)).status).toBe(403);
   });
 
   it('layers off: 503', async () => {

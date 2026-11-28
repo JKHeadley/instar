@@ -1,0 +1,58 @@
+{
+  "version": 3,
+  "slug": "project-purpose-in-standing-summaries",
+  "sessionId": "0a4a1a61-9c43-440d-9534-78e60154a58c",
+  "timestamp": "2026-11-27T06:39:35.910Z",
+  "artifactPath": "upgrades/side-effects/project-purpose-in-standing-summaries.md",
+  "artifactSha256": "8d35f0c136e235e67ad3f5b20a2c8d232afa607e682073453c8a12a81ff1ce53",
+  "specPath": "docs/specs/studio-project-purpose-pilot.md",
+  "coveredFiles": [
+    "docs/specs/project-registry-approved-anchors.md",
+    "docs/specs/reports/studio-project-purpose-pilot-convergence.md",
+    "docs/specs/studio-project-purpose-pilot.eli16.md",
+    "docs/specs/studio-project-purpose-pilot.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/ProjectAnchorRegistry.ts",
+    "src/core/ProjectPurposePilot.ts",
+    "src/core/SessionManager.ts",
+    "src/monitoring/contextLayers/codexSeed.ts",
+    "src/monitoring/contextLayers/standingPacket.ts",
+    "src/monitoring/contextLayers/standingPacketBoot.ts",
+    "src/server/routes.ts",
+    "tests/e2e/context-budget-codex-seed-alive.test.ts",
+    "tests/e2e/context-layer-standing-packet-alive.test.ts",
+    "tests/fixtures/project-standing-anchor.ts",
+    "tests/integration/context-layer-standing-packet.test.ts",
+    "tests/unit/context-layer-standing-packet.test.ts",
+    "tests/unit/project-anchor-registry.test.ts",
+    "tests/unit/standing-packet-hook.test.ts",
+    "upgrades/next/project-purpose-in-standing-summaries.md",
+    "upgrades/side-effects/project-purpose-in-standing-summaries.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Project purpose attribution, cross-conversation disclosure and native recovery checks",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 7
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/studio-project-purpose-pilot-convergence.md",
+      "iterations": 7,
+      "verified": true
+    }
+  }
+}

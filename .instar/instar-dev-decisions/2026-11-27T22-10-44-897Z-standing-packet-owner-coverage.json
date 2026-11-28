@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T22:10:44.897Z",
+  "slug": "standing-packet-owner-coverage",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/CapabilityIndex.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -211,13 +211,13 @@ export function renderCodexSeed(packetText: string, sha256Hex: string, epoch: st
 // ── The service the routes call ─────────────────────────────────────────────
 
 export type CodexSeedOffer =
-  | { deliver: true; epoch: string; carrier: string; text: string }
+  | { deliver: true; epoch: string; carrier: string; text: string; projectProposalPacketHash?: string }
   | { deliver: false; reason: 'not-codex' | 'bad-request' | 'no-rollout' | 'not-this-topic-session' | 'no-compaction' | 'already-seeded' | 'not-first-prompt' | 'packet-unverified' | 'packet-backoff' };
 
 export interface CodexSeedDeps {
   stateDir: string;
   /** Build, verify and stage the topic's packet now (S10's stager). */
-  stageNow(topicKey: string): { ok: true; delivered: string; sha256: string } | { ok: false; reason: string };
+  stageNow(topicKey: string): { ok: true; delivered: string; sha256: string; projectAnchorProposed?: true } | { ok: false; reason: string };
   /**
    * Is `sessionId` a live Codex session of topic `topicId` on this machine?
    * When given, a seed is offered only to that session (so a request can never
@@ -237,7 +237,7 @@ export class CodexSeedService {
   constructor(private readonly d: CodexSeedDeps) { this.now = d.now ?? Date.now; }
 
   /** The hook's question: is this prompt the first after a compaction this session was not seeded for? */
-  offer(req: { topicId: unknown; sessionId: unknown; transcriptPath: unknown; framework: unknown; promptSha256?: unknown }): CodexSeedOffer {
+  offer(req: { topicId: unknown; sessionId: unknown; transcriptPath: unknown; framework: unknown; promptSha256?: unknown; allowProjectProposal?: boolean }): CodexSeedOffer {
     this.st.offers++;
     if (req.framework !== CODEX_FRAMEWORK) { this.st.rejected++; return { deliver: false, reason: 'not-codex' }; }
     const topic = typeof req.topicId === 'number' || typeof req.topicId === 'string' ? String(req.topicId) : '';
@@ -260,9 +260,22 @@ export class CodexSeedService {
     let r: ReturnType<CodexSeedDeps['stageNow']>;
     try { r = this.d.stageNow(topic); } catch (e) { r = { ok: false, reason: e instanceof Error ? e.message : String(e) }; }
     if (!r.ok) { this.failedAt.set(topic, this.now()); this.st.unverified++; return { deliver: false, reason: 'packet-unverified' }; }
+    if (r.projectAnchorProposed && req.allowProjectProposal !== true) {
+      this.st.rejected++;
+      return { deliver: false, reason: 'not-this-topic-session' };
+    }
     this.failedAt.delete(topic);
-    this.st.delivered++;
-    return { deliver: true, epoch: c.windowId, carrier: `packet:${r.sha256.slice(0, 8)}`, text: renderCodexSeed(r.delivered, r.sha256, c.windowId) };
+    if (!r.projectAnchorProposed) this.st.delivered++;
+    return {
+      deliver: true, epoch: c.windowId, carrier: `packet:${r.sha256.slice(0, 8)}`,
+      text: renderCodexSeed(r.delivered, r.sha256, c.windowId),
+      ...(r.projectAnchorProposed ? { projectProposalPacketHash: r.sha256 } : {}),
+    };
+  }
+
+  finishProjectProposalOffer(delivered: boolean): void {
+    if (delivered) this.st.delivered++;
+    else this.st.rejected++;
   }
 
   /** The hook printed the seed: write the seeded marker for that epoch (only an epoch the rollout really holds). */
