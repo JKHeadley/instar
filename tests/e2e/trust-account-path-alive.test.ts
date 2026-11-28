@@ -88,13 +88,15 @@ describe('Trust account path E2E (feature is alive)', () => {
           const evaluate = (tool_name: string) => request(server.getApp()).post('/operations/evaluate')
             .set('Authorization', `Bearer ${AUTH}`).send({ service: tool_name.split('__')[1], mutability: 'modify',
               reversibility: 'reversible', description: 'connector lifecycle fixture', tool_name, tool_input: {} });
-          for (const name of ['mcp__codex_apps__github__fetch_pr', 'mcp__codex_apps__github_get_pr_info', 'mcp__other_engine__github__list_pull_requests']) {
+          for (const name of ['mcp__codex_apps__github__fetch_pr', 'mcp__codex_apps__github_get_pr_info', 'mcp__other_engine__github__list_pull_requests',
+            'mcp__threadline__threadline_discover', 'mcp__threadline__threadline_agents']) {
             const response = await evaluate(name);
             expect(response.status).toBe(200);
             expect(response.body).toMatchObject({ action: 'proceed', trust: { verdict: 'not-gated', why: 'read' } });
           }
           expect(runtime.store.openRequests()).toHaveLength(0);
-          for (const name of ['mcp__codex_apps__github__push_files', 'mcp__other_engine__github_read_then_merge', 'mcp__bridge__inspect_read', 'mcp__bridge__opaque']) {
+          for (const name of ['mcp__codex_apps__github__push_files', 'mcp__other_engine__github_read_then_merge', 'mcp__bridge__inspect_read', 'mcp__bridge__opaque',
+            'mcp__threadline__threadline_send', 'mcp__threadline__threadline_delete']) {
             const response = await evaluate(name);
             expect(response.status).toBe(200);
             expect(response.body).toMatchObject({ action: 'ask', trust: { verdict: 'ask', why: 'no-grant' } });
