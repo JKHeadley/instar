@@ -1005,6 +1005,29 @@ describe('card source message navigation', () => {
   });
 });
 
+it('an obsolete list401 status answer cannot delete the key or repaint after disposal', async () => {
+  const idb = fakeIndexedDB();
+  const bd = await import('../../dashboard/console/browser-device.js');
+  const { keyPair, publicKey } = await bd.generateDeviceKey();
+  idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+  let resolveStatus!: (v: { status: number; body: unknown }) => void;
+  const statusWait = new Promise<{ status: number; body: unknown }>(resolve => { resolveStatus = resolve; });
+  const { doc } = await boot(c => {
+    if (c.url.startsWith('/mobile/browser-devices/status?keyHash=')) return statusWait;
+    if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+    if (c.url.startsWith('/mobile/conversations?')) return { status: 401, body: {} };
+    return undefined;
+  }, '#/work/chats', idb);
+  for (let i = 0; i < 30 && !calls.some(c => c.url.includes('status?keyHash=')); i++) await flush();
+  expect(calls.some(c => c.url.includes('status?keyHash='))).toBe(true);
+  disposePage();
+  const before = doc.body.textContent;
+  resolveStatus({ status: 200, body: { ...STATUS, key: { state: 'revoked' } } });
+  for (let i = 0; i < 8; i++) await flush();
+  expect(idb.stores.get('device')!.has('m1')).toBe(true);
+  expect(doc.body.textContent).toBe(before);
+});
+
 describe('durable send admission', () => {
   it('keeps the actual draft and starts no send when durable admission fails', async () => {
     const idb = fakeIndexedDB();

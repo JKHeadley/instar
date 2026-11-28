@@ -352,10 +352,11 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
    * After a 401 from a signed call: ask the status route and delete this machine's key only on a
    * definite answer. Returns the decision (keyDecision) plus `deleted`.
    */
-  async function checkAfter401() {
+  async function checkAfter401({ signal } = {}) {
     if (!record) return { action: 'keep', show: 'unknown' };
     const captured = record;
     const st = await status(captured.keyHash);
+    if (signal?.aborted) return { action: 'keep', show: 'cancelled' };
     if (!sameDeviceIdentity(record, captured)) return { action: 'keep', show: 'unknown' };
     if (!st.ok) return { action: 'keep', show: st.off ? 'off' : 'unknown' };
     const d = keyDecision(st.data, captured);

@@ -501,7 +501,7 @@ export function createScheduler({ budget = POLL_BUDGET_PER_MIN } = {}) {
   function spend(nowMs) { prune(nowMs); window.push(nowMs); }
   function canSpend(nowMs) { prune(nowMs); return window.length < budget; }
 
-  function start(task, nowMs) { inFlight = task.id; window.push(nowMs); }
+  function start(task, nowMs, { spend: countRead = true } = {}) { inFlight = task.id; if (countRead) window.push(nowMs); }
 
   /** outcome: { status, retryAfterMs? } */
   function finish(task, nowMs, outcome = {}) {

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "chat-list-visible-states",
+  "sessionId": "f84816a2-2f4b-4710-a14b-20f51e9af624",
+  "timestamp": "2026-11-28T09:45:29.596Z",
+  "artifactPath": "upgrades/side-effects/chat-list-visible-states.md",
+  "artifactSha256": "00754ff5462e1f20e8a301c5039c674c370ab8f8a8d46e1a10203e2a15a5d23b",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-23T22-29-28-832Z-chat-list-visible-states-c17463d2.json",
+    "dashboard/console/browser-device.js",
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/audits/chat-list-read-states.md",
+    "tests/unit/console-chat-list-states.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/chat-list-visible-states.md",
+    "upgrades/side-effects/chat-list-visible-states.eli16.md",
+    "upgrades/side-effects/chat-list-visible-states.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review binding for the already-reviewed reversible conversation read repair.",
+  "eli16Path": "upgrades/side-effects/chat-list-visible-states.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chat-list-visible-states.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
