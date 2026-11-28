@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "graph-fast-context-pages",
+  "sessionId": "8fca50f7-ccc8-4d27-9795-6855a8f65db9",
+  "timestamp": "2026-11-12T02:01:15.326Z",
+  "artifactPath": "upgrades/side-effects/graph-fast-context-pages.md",
+  "artifactSha256": "70fb5a82d65224860670c8c385ef15eead210c552dac7f933304708789bb07b2",
+  "coveredFiles": [
+    "docs/eli16/graph-fast-context-pages.eli16.md",
+    "tests/integration/conversation-graph-replication-contexts.test.ts",
+    "upgrades/next/graph-fast-context-pages.md",
+    "upgrades/side-effects/graph-fast-context-pages.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible test-only CMT1637 repair: real protocol bounds and all semantic assertions retained; no runtime, authority, config or data change. Draft checkpoint uses official full verification for unmeasured execution before merge, as explicitly coordinated; no test pass or speed claimed.",
+  "eli16Path": "docs/eli16/graph-fast-context-pages.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-fast-context-pages.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "opus-independent-code-and-side-effects",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
