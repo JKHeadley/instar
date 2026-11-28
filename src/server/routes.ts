@@ -517,6 +517,7 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { profileProposalPlacement } from '../core/profileProposalPlacement.js';
 import { TopicCreationProvenanceStore, checkCitation, parseOnBehalfOf, crossTopicEligible, safeConversationName, CROSS_TOPIC_FIELDS, type CitationDeps } from '../core/topicCreationProvenance.js';
 import { StageTransitionWiringError, validateStageTransition } from '../core/StageTransitionValidator.js';
+import { readProjectRoundDiagnostic } from '../core/ProjectRoundDiagnostics.js';
 import { createProductionStageTransitionContext } from '../core/StageTransitionContext.js';
 import type { PipelineStage, RoundStatus } from '../core/InitiativeTracker.js';
 import {
@@ -26809,10 +26810,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const childrenById = new Map(children.map((child) => [child.id, child]));
     const projectForRead = {
       ...project,
-      rounds: (project.rounds ?? []).map((round) => {
+      rounds: (project.rounds ?? []).map((round, roundIndex) => {
         const derived = deriveProjectRound(round, childrenById);
+        const localDiagnostic = isLoopbackPeer(req.socket.remoteAddress)
+          && !req.headers['x-forwarded-for'] && !req.headers['cf-connecting-ip'];
+        const diagnostic = localDiagnostic ? readProjectRoundDiagnostic(
+          ctx.config.stateDir, project.id, roundIndex, round.lastChildExit?.diagnosticRef,
+        ) : undefined;
         return {
           ...round,
+          ...(round.lastChildExit ? { lastChildExit: { ...round.lastChildExit, ...diagnostic } } : {}),
           status: derived.effectiveStatus,
           ...(round.status !== derived.effectiveStatus ? { storedStatus: round.status } : {}),
           evidenceMissingByItem: derived.evidenceMissingByItem,

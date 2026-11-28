@@ -16,12 +16,16 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { SessionManager } from '../../src/core/SessionManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { ProjectAutoAdvancePoller } from '../../src/core/ProjectAutoAdvancePoller.js';
+import { createProjectRoundExecutor } from '../../src/core/ProjectRoundExecution.js';
 import { ProjectRoundRunner } from '../../src/core/ProjectRoundRunner.js';
 import { MachineHeartbeat } from '../../src/core/MachineHeartbeat.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -955,12 +959,12 @@ goal: try escape
     expect(typeof res.body.reason).toBe('string');
   });
 
-  it('POST /projects/:id/run-round — 200 schedules round when preflight passes', async () => {
+  it('schedules the round, runs the linked topic profile, and returns the diagnostic through HTTP', async () => {
     await seedProject('rr-2');
     const proj = tracker.get('rr-2')!;
-    // Satisfy preflight steps 5+6: record first-launch ack.
     await tracker.update(proj.id, {
       firstLaunchAckAt: new Date().toISOString(),
+      telegramTopicId: '147723',
       ifMatch: proj.version,
     });
     const res = await request(app)
@@ -968,13 +972,69 @@ goal: try escape
       .set('Authorization', `Bearer ${AUTH_TOKEN}`)
       .send({ roundIndex: 0 });
     expect(res.status).toBe(200);
-    expect(res.body.id).toBe('rr-2');
-    expect(res.body.roundIndex).toBe(0);
-    expect(typeof res.body.scheduledAt).toBe('string');
-    // Verify autoAdvanceAt actually landed on the round.
-    const updated = tracker.get('rr-2')!;
-    expect(updated.rounds![0].autoAdvanceAt).toBe(res.body.scheduledAt);
-  });
+    expect(res.body).toMatchObject({ id: 'rr-2', roundIndex: 0 });
+    expect(tracker.get(proj.id)?.rounds?.[0]?.autoAdvanceAt).toBe(res.body.scheduledAt);
+
+    const binaryPath = path.join(plansDir, 'codex-round-fixture');
+    fs.writeFileSync(binaryPath, [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo "codex-cli 0.170.0"; exit 0; fi',
+      'case "$*" in *INSTAR_STOP_CONDITION*) ;; *) exit 0 ;; esac',
+      'case "$*" in *"-m gpt-6-luna"*) ;; *) exit 42 ;; esac',
+      'test -d "$INSTAR_AGENT_HOME/.instar" || exit 43',
+      'curl -fsS --max-time 3 -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" "$INSTAR_SERVER_URL/projects/rr-2?fields=id" >/dev/null || exit 44',
+      'echo "round ran with the topic model" >&2',
+      'exit 0',
+    ].join('\n'), { mode: 0o755 });
+    const machineId = 'test-machine';
+    const deps = { stateDir: project.stateDir, machineId };
+    const runner = new ProjectRoundRunner({ tracker, ...deps });
+    const listener = app.listen(0);
+    await once(listener, 'listening');
+    try {
+      const address = listener.address();
+      if (!address || typeof address === 'string') throw new Error('Could not bind project fixture');
+      const manager = new SessionManager({
+        ...makeConfig().sessions, projectName: makeConfig().projectName,
+        authToken: AUTH_TOKEN, port: address.port,
+      }, project.state);
+      const executor = createProjectRoundExecutor(tracker, {
+        ...deps, prepareLaunch: (profile, cwd) => manager.prepareProjectRoundLaunch(profile, cwd),
+      }, (topicId) => {
+        expect(topicId).toBe('147723');
+        return { framework: 'codex-cli', model: 'gpt-6-luna', binaryPath };
+      });
+      const poller = new ProjectAutoAdvancePoller({ tracker, runner, machineId, executor });
+      const tick = await poller.tick();
+      expect(tick.executed).toContain(proj.id);
+      await expect.poll(() => poller.inFlightCount(), { timeout: 8000 }).toBe(0);
+      expect(tick.executorErrors).toEqual([]);
+      const read = await request(app)
+        .get('/projects/rr-2?fields=rounds')
+        .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+      expect(read.status).toBe(200);
+      expect(read.body.project.rounds[0]).toMatchObject({
+        status: 'partially-complete',
+        lastChildExit: {
+          framework: 'codex-cli',
+          model: 'gpt-6-luna',
+          code: 0,
+          signal: null,
+          stderr: 'round ran with the topic model',
+          stderrTruncated: false,
+        },
+      });
+      const forwarded = await request(app)
+        .get('/projects/rr-2?fields=rounds')
+        .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+        .set('X-Forwarded-For', '198.51.100.7');
+      expect(forwarded.status).toBe(200);
+      expect(forwarded.body.project.rounds[0].lastChildExit).toMatchObject({ code: 0 });
+      expect(forwarded.body.project.rounds[0].lastChildExit).not.toHaveProperty('stderr');
+    } finally {
+      await new Promise<void>((resolve, reject) => listener.close(err => err ? reject(err) : resolve()));
+    }
+  }, 20_000);
 
   it('POST /projects/:id/run-round — 404 on out-of-range round index', async () => {
     await seedProject('rr-3');

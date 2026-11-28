@@ -25305,25 +25305,37 @@ export async function startServer(options: StartOptions): Promise<void> {
     // The executor itself acquires the lock + spawns + polls + cleans up.
     // Errors are surfaced via the poller's result.executorErrors and
     // logged to stderr; they don't take the server down.
-    const { runRound } = await import('../core/ProjectRoundExecution.js');
+    const { createProjectRoundExecutor } = await import('../core/ProjectRoundExecution.js');
     const { ProjectAutoAdvancePoller } = await import('../core/ProjectAutoAdvancePoller.js');
     const projectAutoAdvancePoller = new ProjectAutoAdvancePoller({
       tracker: initiativeTracker,
       runner: projectRoundRunner,
       machineId: machineIdForProjects,
-      executor: async ({ projectId, roundIndex }) => {
-        const proj = initiativeTracker.get(projectId);
-        if (!proj || !proj.targetRepoPath) return;
-        await runRound(
-          {
-            tracker: initiativeTracker,
-            projectId,
-            roundIndex,
-            targetRepoPath: proj.targetRepoPath,
-          },
-          { stateDir: config.stateDir }
-        );
-      },
+      executor: createProjectRoundExecutor(initiativeTracker, {
+        stateDir: config.stateDir,
+        prepareLaunch: (profile, cwd) => sessionManager.prepareProjectRoundLaunch(profile, cwd),
+      }, (topicId) => {
+        const profile = topicId === undefined ? undefined : _topicProfileResolver?.resolve(topicId);
+        const numericTopicId = Number(topicId);
+        const telegramTopic = Number.isSafeInteger(numericTopicId) && numericTopicId > 0 ? numericTopicId : undefined;
+        const framework = profile?.framework ?? resolveTopicFramework(telegramTopic);
+        const local = telegramTopic === undefined ? undefined : _topicLocalModelStore?.get(telegramTopic);
+        const codexLocalProvider = framework === CODEX_CLI_FRAMEWORK &&
+          (local?.provider === 'ollama' || local?.provider === 'lmstudio') ? local.provider : undefined;
+        return {
+          framework,
+          model: profile ? profile.model : config.sessions?.frameworkDefaultModels?.[framework],
+          effort: profile?.effort,
+          thinkingMode: profile?.thinkingMode,
+          codexLocalProvider,
+          binaryPath: resolveFrameworkBinaryPath({
+            framework,
+            frameworkBinaryPaths: config.sessions?.frameworkBinaryPaths,
+            claudePath: config.sessions?.claudePath,
+            configuredFramework: config.sessions?.framework,
+          }),
+        };
+      }),
     });
     // Tick once a minute; .unref() so the timer never keeps the process alive.
     const projectAutoAdvanceTimer = setInterval(() => {

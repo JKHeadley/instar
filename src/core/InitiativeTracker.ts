@@ -1,6 +1,7 @@
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
+import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { validGenericMeasurement } from '../monitoring/MeasurementContractVersion.js';
 import { hasMeasurementBinding, type GenericMeasurementContract } from '../monitoring/MeasurementSubject.js';
 /**
@@ -162,6 +163,17 @@ export type RoundStatus =
   | 'failed'
   | 'regressed';
 
+export interface ProjectRoundChildExit {
+  framework?: IntelligenceFramework;
+  model?: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  /** Correlates with the latest machine-local stderr by project and round. */
+  diagnosticRef?: string;
+  stderrTruncated: boolean;
+  startFailed?: boolean;
+}
+
 export interface InitiativeRound {
   name: string;
   /** Child initiative IDs in this round. */
@@ -174,6 +186,8 @@ export interface InitiativeRound {
   haltReason?: string;
   /** Counter; round-runner caps this at 3. */
   resumeAttempts?: number;
+  /** Latest child diagnostic for the most recent execution that spawned a process. */
+  lastChildExit?: ProjectRoundChildExit;
   /** Cached drift verdict from the most recent attempt. See DriftVerdict in types.ts. */
   lastDriftVerdict?: DriftVerdict;
   /** ISO timestamp the lastDriftVerdict was computed; round-runner uses this for the 24h freshness window. */
