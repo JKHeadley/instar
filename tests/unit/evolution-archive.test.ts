@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { EvolutionArchive, evolutionArchiveDigest, EVOLUTION_ARCHIVE_MAX_BYTES, type EvolutionArchiveEnvelope } from '../../src/core/EvolutionArchive.js';
-import { EvolutionArchiveSync } from '../../src/core/EvolutionArchiveSync.js';
+import { EvolutionArchiveSync, EVOLUTION_ARCHIVE_TERMINAL_RESCAN_MS } from '../../src/core/EvolutionArchiveSync.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { ActionItem, LearningEntry } from '../../src/core/types.js';
 const dirs: string[] = [];
@@ -64,6 +64,41 @@ describe('EvolutionArchive memory preservation',()=>{
   expect(a.page().entries).toHaveLength(50);expect(a.page().nextOffset).toBe(50);expect(a.page({offset:50}).entries).toHaveLength(5);expect(a.page({id:'ACT-055',kind:'actions'}).entries[0].record).toEqual(action('ACT-055'));
  });
 });
+describe('EvolutionArchiveSync write churn',()=>{
+ it('an import that adds nothing does not rewrite the archive',()=>{
+  const a=archive('A'),b=archive('B');a.preserve('actions',[action()]);
+  expect(b.importPage(a.page())).toBe(1);
+  const write=vi.spyOn(b,'write');
+  expect(b.importPage(a.page())).toBe(0);
+  expect(write).not.toHaveBeenCalled();
+  expect(b.page().total).toBe(1);
+ });
+ it('after a complete scan, repeated peer presence does not rescan or write until the bounded interval passes',async()=>{
+  const a=archive('A'),b=archive('B');a.preserve('actions',[action()]);let clock=1_000;
+  const fetchPage=vi.fn(async(_id:string,_url:string,offset:number)=>a.page({offset}));
+  const sync=new EvolutionArchiveSync(b,{fetchPage,now:()=>clock});
+  await sync.onPeerRecorded('A','https://a.test');
+  expect(fetchPage).toHaveBeenCalledTimes(1);
+  expect(b.read().syncPeers?.A).toMatchObject({offset:0,failures:0,nextAttemptAt:1_000+EVOLUTION_ARCHIVE_TERMINAL_RESCAN_MS});
+  const write=vi.spyOn(b,'write');
+  for(let i=0;i<45;i++){clock+=1_000;await sync.onPeerRecorded('A','https://a.test');}
+  expect(fetchPage).toHaveBeenCalledTimes(1);
+  expect(write).not.toHaveBeenCalled();
+  clock=1_000+EVOLUTION_ARCHIVE_TERMINAL_RESCAN_MS;
+  await sync.onPeerRecorded('A','https://a.test');
+  expect(fetchPage).toHaveBeenCalledTimes(2);
+  // The rescan writes only its retry reservation and its cursor: the unchanged page adds nothing.
+  expect(write).toHaveBeenCalledTimes(2);
+ });
+ it('a peer that gained memory is picked up at the next rescan, from offset zero',async()=>{
+  const a=archive('A'),b=archive('B');a.preserve('actions',[action('ACT-001')]);let clock=0;
+  const sync=new EvolutionArchiveSync(b,{fetchPage:async(_id,_url,offset)=>a.page({offset}),now:()=>clock});
+  await sync.onPeerRecorded('A','https://a.test');expect(b.page().total).toBe(1);
+  a.preserve('actions',[action('ACT-002')]);
+  clock+=EVOLUTION_ARCHIVE_TERMINAL_RESCAN_MS;await sync.onPeerRecorded('A','https://a.test');
+  expect(b.page().total).toBe(2);
+ });
+});
 describe('EvolutionArchiveSync bounded custody',()=>{
  it('gossips A to B to C and retains complete memory after source disappears',async()=>{
   const a=archive('A'),b=archive('B'),c=archive('C');const full={...learning(),description:'important '.repeat(5000)};a.preserve('learnings',[full]);
@@ -83,7 +118,8 @@ describe('EvolutionArchiveSync bounded custody',()=>{
   const a=archive('A'),b=archive('B');a.preserve('actions',[action()]);
   const sync=new EvolutionArchiveSync(b,{fetchPage:async()=>{b.preserve('learnings',[learning()]);return a.page();}});await sync.onPeerRecorded('A','https://a.test');
   expect(b.page().entries).toHaveLength(2);expect(b.read().syncPeers?.A.offset).toBe(0);
-  const bad=a.page();bad.entries[0].digest='f'.repeat(64);const fail=new EvolutionArchiveSync(b,{fetchPage:async()=>bad});await fail.onPeerRecorded('A','https://a.test');
+  const bad=a.page();bad.entries[0].digest='f'.repeat(64);// The first pass completed a scan, so the next one is due only after the bounded rescan interval.
+  const fail=new EvolutionArchiveSync(b,{fetchPage:async()=>bad,now:()=>Date.now()+EVOLUTION_ARCHIVE_TERMINAL_RESCAN_MS});await fail.onPeerRecorded('A','https://a.test');
   expect(b.page().entries).toHaveLength(2);expect(b.read().syncPeers?.A.failures).toBe(1);
  });
  it('restarts from a new incarnation instead of accepting an old offset from rebuilt stream',async()=>{

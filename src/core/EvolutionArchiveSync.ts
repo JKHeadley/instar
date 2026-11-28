@@ -3,6 +3,15 @@ import { EvolutionArchive, type EvolutionArchivePage, type EvolutionArchiveSyncP
 
 export const EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES = 6;
 
+/**
+ * After a complete scan of a peer's archive, the next full rescan waits this long. A terminal page
+ * used to clear nextAttemptAt to 0, so every authenticated peer-presence event (seconds apart)
+ * started a new full pass: a reservation write, the import, and a cursor write, each rewriting the
+ * whole archive (2026-11-27 M5: 45 replacements of 856 KiB in 40 s). The rescan still starts from
+ * offset 0, as before; only its timing is bounded. Memory is replicated within one interval.
+ */
+export const EVOLUTION_ARCHIVE_TERMINAL_RESCAN_MS = 15 * 60_000;
+
 /** Shared runtime/ratchet brake: unchanged evidence eventually permits no more requests. */
 export function evolutionArchiveSyncAttemptDue(peer: EvolutionArchiveSyncPeer, now: number): boolean {
   return !peer.parked && peer.failures < EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES && now >= peer.nextAttemptAt;
@@ -75,8 +84,10 @@ export class EvolutionArchiveSync {
           continue;
         }
         if (page.offset !== peer.offset) throw new Error('peer archive offset mismatch');
-        this.archive.importPage(page); // fsync custody first; cursor is durable only afterwards.
-        const imported = { ...peer, incarnation: page.incarnation, offset: page.nextOffset ?? 0, failures: 0, nextAttemptAt: 0, parked: false };
+        this.archive.importPage(page); // fsync custody first (when new); cursor is durable only afterwards.
+        // A non-terminal page continues the pass at once; a complete scan rescans after a bounded interval.
+        const nextAttemptAt = page.nextOffset === null ? now() + EVOLUTION_ARCHIVE_TERMINAL_RESCAN_MS : 0;
+        const imported = { ...peer, incarnation: page.incarnation, offset: page.nextOffset ?? 0, failures: 0, nextAttemptAt, parked: false };
         this.persist(peerId, imported);
         peer = imported;
         if (page.nextOffset === null) return;

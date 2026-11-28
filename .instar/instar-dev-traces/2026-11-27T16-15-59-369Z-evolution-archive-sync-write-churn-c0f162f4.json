@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "evolution-archive-sync-write-churn",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T16:15:59.369Z",
+  "artifactPath": "upgrades/side-effects/evolution-archive-sync-write-churn.md",
+  "artifactSha256": "518fb6e827fa727d4f3fbc23c38f84fb2799dd41ae35e45b808d1a5ed59b0b34",
+  "coveredFiles": [
+    "src/core/EvolutionArchiveSync.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation correction after review: writes are two per page, not two per rescan; fleet baselines added. No code change.",
+  "eli16Path": "docs/eli16/evolution-archive-sync-write-churn.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/evolution-archive-sync-write-churn.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

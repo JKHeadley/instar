@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "evolution-archive-sync-write-churn",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T16:10:16.648Z",
+  "artifactPath": "upgrades/side-effects/evolution-archive-sync-write-churn.md",
+  "artifactSha256": "295f98a29ee1ecd2297b4f422207083fb6762849df9d55f3d9fe75810aeea38c",
+  "coveredFiles": [
+    "src/core/EvolutionArchive.ts",
+    "src/core/EvolutionArchiveSync.ts",
+    "tests/unit/evolution-archive.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bounded rescan delay after a terminal page and no write for an import that adds nothing; retry, cursor and park semantics unchanged.",
+  "eli16Path": "docs/eli16/evolution-archive-sync-write-churn.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/evolution-archive-sync-write-churn.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
