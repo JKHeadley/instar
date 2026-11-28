@@ -27,6 +27,19 @@ Before the reduce turn, before any answer turn, and before judging for each judg
 
 ## Second-pass review
 
+**Reviewer:** an independent Claude Opus 5.5 reviewer sub-agent with a fresh context that did not write the change, reading the whole PR (71 paths outside the generated records) on the exact head 7f6206766, after the final merge of main (49dc53022), on 2026-11-28 00:28 PT. First verdict: concern raised, one blocking finding. **Blocking, fixed:** `tests/context-replay/test_context_replay_capture.py` was never run by any test runner, so the confined capture's stream and private-text checks could not fail in CI or Local Verify. It now runs from `tests/unit/context-replay.test.ts`. Checked correct by the reviewer: nothing under `src/` changes and no shipped code refers to these scripts; the answer prompt carries no label, rubric or reference answer; route failures halt and save nothing; totals and diagnose output carry no model or private text; the `ajv` pin agrees with the lock; the merge of main changed only version lines among the PR's paths.
+
+Minor points, with corrections to the text of this artifact (where an earlier line says otherwise, these hold):
+- Blinding: a context-arm trial's judge prompt carries one extra context record that the `none` and `full` trials do not, so a judge can tell a context arm from `none` or `full` before reading the answer. Judges must see the context to check citations, so this is disclosed, not changed. Item 2 of the earlier list understates it.
+- Item 5's "no trial turns into a wrong answer" holds for the `completeOnly` figures only. In the raw paired figures, a valid answer whose judge came back invalid counts its unfinished criteria as not-pass. Read `completeOnly` for comparisons.
+- Each `total` run takes a new disclosure number, so "the first combining of judge outputs" is not tracked across totals runs: slots regraded after an earlier totals run stay marked `supported`.
+- Shape codes keep only property names the frozen schemas define (the Diagnose step's older wording about plain codes is superseded).
+- The host test file now has 27 tests, not 25.
+- The public synthetic capture reuses one scratch folder across answer turns and its probe passes on reply wording; the stream check still refuses any tool use. Low risk, because it reads only the public synthetic pack.
+- One host test assertion (a submission id never contains an arm name) holds by construction and proves nothing; it is harmless.
+
+Earlier passes, in order:
+
 An independent reviewer (a fresh sub-agent that did not write the change) read 487fdb294..c2aa09b41 against origin/main on 2026-11-27, under the Chief of Staff's pre-queue review rule. First verdict: changes requested. Re-check of 8bc4201d1: approve with nits. The nits (no limits field in totals.json, untriggered trials counted as failures, Codex notice and plan items halting the run) were fixed in 89b888045, which the reviewer concurred with. Its one remaining non-blocking point, unscored trials entering the paired comparisons, was fixed after that. Findings and what was done:
 
 1. Failed answers and judgments were saved for good and counted as wrong answers. Fixed: route failures halt without saving, answer timeouts are not saved, and the totals count notJudged.
