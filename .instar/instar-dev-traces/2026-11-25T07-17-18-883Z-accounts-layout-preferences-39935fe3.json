@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "accounts-layout-preferences",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T07:17:18.883Z",
+  "artifactPath": "upgrades/side-effects/accounts-layout-preferences.md",
+  "artifactSha256": "49e55b7a45cb18d32786c48e0e3ec2721a7dbfc9ff43e401d18ebead350bf978",
+  "coveredFiles": [
+    "dashboard/console/accounts-model.js",
+    "dashboard/console/accounts.js",
+    "dashboard/console/console.css",
+    "tests/unit/console-accounts-order.test.ts",
+    "upgrades/next/accounts-layout-preferences.md",
+    "upgrades/side-effects/accounts-layout-preferences.eli16.md",
+    "upgrades/side-effects/accounts-layout-preferences.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible arrangement of existing Accounts rows with local browser preferences. No authority, routes or stored account data change.",
+  "eli16Path": "upgrades/side-effects/accounts-layout-preferences.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-layout-preferences.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

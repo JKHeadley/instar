@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "usage-ledger-bounded-ingestion",
+  "sessionId": "181652f6-4f88-440e-9a91-37b0c12c33ce",
+  "timestamp": "2026-11-27T15:15:53.288Z",
+  "artifactPath": "upgrades/side-effects/usage-ledger-bounded-ingestion.md",
+  "artifactSha256": "e3db3654fafd1163e0ad3306d254790a4e3a6b04493abc40779a28a016b38ccb",
+  "coveredFiles": [
+    "docs/specs/usage-ledger-bounded-ingestion.eli16.md",
+    "src/monitoring/UsageLedger.ts",
+    "src/monitoring/UsageLedgerTranscript.ts",
+    "src/monitoring/UsageLedgerTranscript.worker.ts",
+    "tests/integration/usage-ledger-pool-roots.test.ts",
+    "tests/unit/UsageLedger.asyncScan.test.ts",
+    "tests/unit/UsageLedger.poolRoots.test.ts",
+    "upgrades/next/usage-ledger-bounded-ingestion.md",
+    "upgrades/side-effects/usage-ledger-bounded-ingestion.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Machine reliability repair authorized under Rule 7. The change bounds an existing usage-accounting implementation with no authority, public schema, migration, or configuration change.",
+  "eli16Path": "docs/specs/usage-ledger-bounded-ingestion.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-ledger-bounded-ingestion.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Scheduled ingestion yielded between files while synchronously reading and parsing each entire unread range. Cold and invalidated checkpoints increase that range. The Studio stall samples establish overlap without causal attribution."
+  }
+}

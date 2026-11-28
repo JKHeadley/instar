@@ -21,19 +21,80 @@ describe('accounts page model', () => {
     expect(buildAccountsPage(ok({ enabled: false }), NOW).reason).toContain('not set up');
     expect(buildAccountsPage(ok({ enabled: true }), NOW).ok).toBe(false);
   });
-  it('shows each account once, with its freshest reading and every machine as a chip', () => {
+  it('shows each account once with its freshest window and each machine recorded', () => {
     const p = buildAccountsPage(ok({ accounts: [row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini', lastQuota: { measuredAt: iso(-1), sevenDay: { utilizationPct: 80, resetsAt: iso(100) } } })] }), NOW);
     expect(p.accounts).toHaveLength(1);
     expect(p.accounts[0].cells.map((c: { machine: string }) => c.machine)).toEqual(['Mac Studio', 'Mac Mini']);
     expect(p.accounts[0].tight.pct).toBe(80);
   });
-  it('a cell needing sign-in is one needs-you item with the right action', () => {
+  it('keeps weekly and Fable quota when another machine needs sign-in or reports only one window', () => {
+    const p = buildAccountsPage(ok({ accounts: [
+      row({ status: 'needs-reauth', lastQuota: { measuredAt: iso(-1) } }),
+      row({ machineId: 'm2', machineNickname: 'Mac Mini', lastQuota: { measuredAt: iso(-15),
+        sevenDay: { utilizationPct: 42, resetsAt: iso(100) }, fable: { utilizationPct: 64, resetsAt: iso(200) },
+      } }),
+      row({ machineId: 'm3', machineNickname: 'Laptop', lastQuota: { measuredAt: iso(-2),
+        secondary: { usedPercent: 55, resetsAtIso: iso(100) },
+      } }),
+    ] }), NOW);
+    expect(p.accounts).toHaveLength(1);
+    expect(p.accounts[0].windows).toMatchObject([{ key: 'weekly', pct: 55 }, { key: 'fable', pct: 64 }]);
+    expect(p.accounts[0].cells[0].state).toBe('attn');
+    expect(p.accounts[0].readingAt).toBe(Date.parse(iso(-15)));
+  });
+  it('keeps the latest valid check for an empty row and ignores future-dated quota', () => {
+    const page = buildAccountsPage(ok({ accounts: [
+      row({ id: 'empty', lastQuota: { measuredAt: iso(-20) } }),
+      row({ id: 'empty', machineId: 'm2', lastQuota: { measuredAt: iso(90), sevenDay: { utilizationPct: 90 } } }),
+      row({ id: 'weekly', lastQuota: { measuredAt: iso(-5), sevenDay: { utilizationPct: 20, resetsAt: iso(60) } } }),
+    ] }), NOW);
+    expect(page.accounts.map(a => a.id)).toEqual(['weekly', 'empty']);
+    expect(page.accounts[1]).toMatchObject({ windows: [], line: 'No reading yet.', lastCheckedAt: Date.parse(iso(-20)) });
+  });
+
+  it('puts ordinary sign-in gaps and stopped repairs in the agent status area', () => {
     const p = buildAccountsPage(ok({ accounts: [row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth' })] }), NOW, {
       episodes: [{ id: 'e1', accountId: 'luna', machineId: 'm2', state: 'failed', updatedAt: iso(-10) }] });
-    expect(p.headline).toBe('1 sign-in needs you.');
-    expect(p.needs[0]).toMatchObject({ machine: 'Mac Mini', action: 'retry', episodeId: 'e1' });
+    expect(p.headline).toBe('Account usage');
+    expect(p.needs).toEqual([]);
+    expect(p.repairs).toEqual([expect.objectContaining({ machine: 'Mac Mini', rows: [
+      expect.objectContaining({ status: 'Last repair stopped. Waiting for the agent to review it.', ownerAction: null }),
+    ] })]);
     const q = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW);
-    expect(q.needs[0].action).toBe('start');
+    expect(q.needs).toEqual([]);
+    expect(q.repairs[0].rows[0].status).toBe('Sign-in needs checking by the agent');
+  });
+  it('distinguishes an empty machine from a failed read and counts usable quota readings', () => {
+    const p = buildAccountsPage(ok({
+      accounts: [row({}), row({ id: 'repair', nickname: 'Repair account', status: 'needs-reauth', lastQuota: null })],
+      pool: { answeredMachines: [{ machineId: 'm2', nickname: 'Empty Mini' }, { machineId: 'm3', nickname: 'Offline Laptop' }],
+        failed: [{ machineId: 'm3', nickname: 'Offline Laptop' }] },
+    }), NOW);
+    expect(p.usageAccounts.map(a => a.name)).toEqual(['Luna']);
+    expect(p.accounts.find(a => a.name === 'Repair account')?.line).toBe('No reading yet.');
+    expect(p.repairs.map(group => group.machine)).toEqual(['Empty Mini', 'Mac Studio']);
+    expect(p.repairs[0].rows.map(row => row.status)).toEqual([
+      'Waiting for the agent to set up this account', 'Waiting for the agent to set up this account',
+    ]);
+    expect(p.partial).toContain('Offline Laptop');
+    expect(p.needs).toEqual([]);
+  });
+  it('summarizes a large machine roster and collects all-ready machines', () => {
+    const accounts = Array.from({ length: 14 }, (_, index) => {
+      const account = { id: `fixture-${index}`, nickname: `Account ${index}` };
+      const ready = ['Studio', 'Laptop', 'Spare', 'Bench'].map(machine => row({ ...account, machineId: `fixture-${machine.toLowerCase()}`, machineNickname: machine }));
+      return index < 10 ? [...ready, row({ ...account, machineId: 'mini', machineNickname: 'Mini' })] : ready;
+    }).flat();
+    const p = buildAccountsPage(ok({ accounts }), NOW);
+    expect(p.repairs).toEqual([expect.objectContaining({ machine: 'Mini', total: 14, signedIn: 10, rows: expect.any(Array) })]);
+    expect(p.repairs[0].rows).toHaveLength(4);
+    expect(p.signedInMachines).toEqual(['Bench', 'Laptop', 'Spare', 'Studio']);
+  });
+  it('keeps an active but unchecked login outside the all-signed-in summary', () => {
+    const p = buildAccountsPage(ok({ accounts: [row({ loginCheck: 'unavailable' })] }), NOW);
+    expect(p.signedInMachines).toEqual([]);
+    expect(p.repairs[0]).toMatchObject({ total: 1, signedIn: 0,
+      rows: [{ status: 'Waiting for the agent to recheck the sign-in', ownerAction: null }] });
   });
   it('an unconfirmed or blocked sign-in is shown but is not "needs you"', () => {
     const noIncident = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth', loginCheck: 'unavailable' })] }), NOW, {
@@ -43,25 +104,25 @@ describe('accounts page model', () => {
     expect(noIncident.headline).not.toContain('needs you');
     expect(noIncident.accounts[0].cells[0]).toMatchObject({ state: 'waiting', label: 'sign-in not confirmed; still checking' });
     // Shown on its row only; no "nothing for you to do" line at the top.
-    expect(noIncident.sub).toBe('');
+    expect(noIncident.repairs[0].rows[0].ownerAction).toBeNull();
     expect(noIncident.notices).toEqual([]);
     const blocked = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW, { blockers: [{ accountId: 'luna', machineId: 'm1', reason: 'profile-unresolved' }] });
     expect(blocked.needs).toHaveLength(0);
     expect(blocked.accounts[0].cells[0].label).toBe("automatic repair can't start yet");
   });
-  it('a blocker for another machine, or a device-limit decision, stays needs-you', () => {
+  it('only an exact device-limit decision is presented as an owner step', () => {
     const other = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW, { blockers: [{ accountId: 'luna', machineId: 'm2', reason: 'no-open-incident' }] });
-    expect(other.needs).toHaveLength(1);
+    expect(other.needs).toHaveLength(0);
     const device = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth' })] }), NOW, { blockers: [{ accountId: 'luna', machineId: 'm1', reason: 'device-limit-benched' }] });
     expect(device.needs).toHaveLength(1);
   });
-  it('a slot stuck on another login is a needs-you item even though the account reads active', () => {
+  it('a slot stuck on another login remains agent work even though the account reads active', () => {
     const p = buildAccountsPage(ok({ accounts: [row({ identityDrifted: true, loginCheck: 'unavailable',
       identityDrift: { actualAccountId: 'sagemind-echo', actualEmail: 'echo@x.io', repairState: 'planned', detectedAt: iso(-60 * 24 * 10) } })] }), NOW, {
       episodes: [{ id: 'old', accountId: 'luna', machineId: 'm1', state: 'failed', updatedAt: iso(-90000) }] });
-    expect(p.headline).toBe('1 sign-in needs you.');
-    expect(p.needs[0]).toMatchObject({ action: 'start', episodeId: 'old' });
-    expect(p.needs[0].sub).toContain("holds echo@x.io's login");
+    expect(p.headline).toBe('Account usage');
+    expect(p.needs).toEqual([]);
+    expect(p.repairs[0].rows[0]).toMatchObject({ ownerAction: null, status: 'Last repair stopped. Waiting for the agent to review it.' });
   });
   it('a fresh or repairing wrong login may correct itself, so it is shown but not counted', () => {
     const drift = (over: Record<string, unknown>) => buildAccountsPage(ok({ accounts: [row({ identityDrifted: true,
@@ -70,11 +131,11 @@ describe('accounts page model', () => {
     expect(drift({ detectedAt: iso(-30) }).accounts[0].cells[0].state).toBe('waiting');
     expect(drift({ detectedAt: iso(-60 * 24 * 10), repairState: 'repairing' }).needs).toHaveLength(0);
     // An undated drift cannot be called fresh.
-    expect(drift({}).needs).toHaveLength(1);
+    expect(drift({}).repairs[0].rows[0].ownerAction).toBeNull();
   });
-  it('a login gone from this machine needs the owner, whatever the account status says', () => {
+  it('ordinary missing logins are agent work; explicit owner-only recovery stays actionable', () => {
     const gone = buildAccountsPage(ok({ accounts: [row({ identityDrifted: true, identityDrift: { actualAccountId: 'missing-local-login', detectedAt: iso(-1) } })] }), NOW);
-    expect(gone.needs).toHaveLength(1);
+    expect(gone.needs).toHaveLength(0);
     expect(gone.accounts[0].cells[0].label).toBe('needs sign-in');
     const owner = buildAccountsPage(ok({ accounts: [row({ identityDrifted: true, identityDrift: { actualAccountId: 'x', repairState: 'owner-relogin-required', detectedAt: iso(-1) } })] }), NOW);
     expect(owner.needs).toHaveLength(1);
@@ -91,11 +152,11 @@ describe('accounts page model', () => {
       const studio = gear.cells.find((c: any) => c.machineId === 'm1');
       expect(studio).toMatchObject({ state: 'missing', label: 'not on this machine', missing: true, machine: 'Mac Studio', actionable: true });
       expect(p.needs).toHaveLength(0);
-      expect(p.headline).toBe('Accounts');
+      expect(p.headline).toBe('Account usage');
     });
     it('a missing cell does not make an account "not ready" or a machine "empty"', () => {
       const p = buildAccountsPage(ok({ accounts: two(), pool: { failed: [] } }), NOW);
-      expect(p.facts[0]).toEqual({ n: '2 of 2', label: 'ready' });
+      expect(p.facts[0]).toEqual({ n: '2', label: 'accounts with usage data' });
       expect(p.notices).toEqual([]);
     });
     it('a machine that did not answer is unknown, not missing', () => {
@@ -133,9 +194,9 @@ describe('accounts page model', () => {
     it('the reported case: two accounts full, others with room, is no notice and no warning title', () => {
       const p = page([at('Adriana', 100), at('Echo', 100), at('Dawn', 89), at('Luna', 73)]);
       expect(p.notices).toEqual([]);
-      expect(p.headline).toBe('Accounts');
+      expect(p.headline).toBe('Account usage');
       expect(p.tone).toBe('ok');
-      expect(p.sub).toBe('');
+      expect(p.sub).toContain('when it resets');
       expect(p.facts.every((f: { tone?: string }) => !f.tone)).toBe(true);
     });
     it('every account full: one notice with when room returns and an ask', () => {
@@ -151,10 +212,11 @@ describe('accounts page model', () => {
     it('an unread account may have room, so no conclusion', () => {
       expect(page([at('A', 100), row({ id: 'B', nickname: 'B', email: 'b@x.io', lastQuota: null })]).notices).toEqual([]);
     });
-    it('a machine with no signed-in account: a notice whose action is the sign-in; not while something is signed in there', () => {
+    it('sign-in gaps appear separately from usage notices', () => {
       const p = page([at('A', 10), at('A', 10, { machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth' })]);
-      expect(p.notices).toEqual([expect.objectContaining({ key: 'machine:m2', tone: 'bad', title: 'Mac Mini has no signed-in account, so nothing can run there.', action: { kind: 'sign-in' } })]);
-      expect(p.headline).toBe('1 sign-in needs you.');
+      expect(p.notices).toEqual([]);
+      expect(p.repairs[0]).toMatchObject({ machine: 'Mac Mini', rows: [{ ownerAction: null }] });
+      expect(p.headline).toBe('Account usage');
       expect(page([at('A', 10), at('A', 10, { machineId: 'm2', machineNickname: 'Mac Mini', status: 'warming' })]).notices).toEqual([]);
       expect(page([at('A', 10, { machineId: 'm2', machineNickname: 'Mac Mini' }), at('B', 10, { machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth' })]).notices).toEqual([]);
     });
@@ -223,11 +285,14 @@ describe('accounts page in a DOM', () => {
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts: [
-        row({}),
-        row({ machineId: 'm2', machineNickname: 'Mac Mini' }),
+        row({ lastQuota: { measuredAt: new Date().toISOString(),
+          sevenDay: { utilizationPct: 42, resetsAt: new Date(Date.now() + 60_000).toISOString() },
+          fable: { utilizationPct: 64, resetsAt: new Date(Date.now() + 120_000).toISOString() },
+        } }),
+        row({ machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth', lastQuota: null }),
         row({ id: 'gear', nickname: 'Gear', email: 'gear@x.io', machineId: 'm2', machineNickname: 'Mac Mini' }),
       ], pool: { failed: [] } },
-      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [{ id: 'owner', accountId: 'luna', machineId: 'm2', state: 'waiting-operator-only' }] },
       '/subscription-pool/in-use': { enabled: true, activeAccountId: 'luna' },
       '/pool': { machines: [] },
     };
@@ -244,8 +309,23 @@ describe('accounts page in a DOM', () => {
     const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 15)); };
     await tick(15);
     const doc = dom.window.document;
-    expect(doc.querySelector('.page-title')!.textContent).toBe('Accounts'); // a missing cell is not "needs you"
-    expect([...doc.querySelectorAll('.mchip.missing')].map((c) => c.textContent)).toEqual(['Mac Studio']);
+    expect(doc.querySelector('.page-title')!.textContent).toBe('Account usage'); // a missing cell is not "needs you"
+    expect(doc.querySelector('#sec-needs')).toBeNull();
+    expect(doc.querySelector('#sec-auto-repair')).toBeNull();
+    const repairLink = doc.querySelector<HTMLAnchorElement>('a[href="#/capacity/accounts?view=sign-in"]')!;
+    expect(repairLink.textContent).toBe('Sign-in repair');
+    repairLink.click();
+    await tick(15);
+    expect(doc.querySelector('.page-title')?.textContent).toBe('Sign-in repair');
+    expect(doc.querySelector('.acct-list')).toBeNull();
+    expect(doc.querySelector('#sec-needs')?.textContent).toContain('Waiting for the agent to set up this account');
+    doc.querySelector<HTMLAnchorElement>('nav[aria-label="Accounts views"] a[href="#/capacity/accounts"]')!.click();
+    await tick(15);
+    expect(doc.querySelector('.acct-list .mchip')).toBeNull();
+    const lunaRow = [...doc.querySelectorAll('button.acct-row')].find(b => b.querySelector('.acct-name')?.textContent?.startsWith('Luna'));
+    expect(lunaRow?.querySelector('[data-window="weekly"]')?.textContent).toContain('42%');
+    expect(lunaRow?.querySelector('[data-window="fable"]')?.textContent).toContain('64%');
+    expect(lunaRow?.querySelector('.acct-line')?.textContent).toBe('Mac Mini: needs sign-in');
     const gearRow = [...doc.querySelectorAll('button.acct-row')].find((b) => b.textContent!.includes('Gear')) as HTMLButtonElement;
     gearRow.click();
     await tick(3);
@@ -260,14 +340,14 @@ describe('accounts page in a DOM', () => {
   });
   it('signs in a cell: asks the PIN, sends it once, shows the sign-in page link, sends the code', async () => {
     const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
-    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts' });
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts?s=needs' });
     const g = globalThis as Record<string, unknown>;
     Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
     dom.window.localStorage.setItem('instar_token', 't');
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts: [row({ status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mac Mini' })], pool: { failed: [] } },
-      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [{ id: 'owner', accountId: 'luna', machineId: 'm2', state: 'waiting-operator-only' }] },
       '/subscription-pool/in-use': { enabled: true, activeAccountId: 'luna' },
       '/pool': { machines: [] },
     };
@@ -286,10 +366,10 @@ describe('accounts page in a DOM', () => {
     const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 15)); };
     await tick(15);
     const doc = dom.window.document;
-    expect(doc.querySelector('.page-title')!.textContent).toBe('1 sign-in needs you.');
-    // Mac Mini's only account needs signing in: the notice spot says so, with the sign-in as its action.
-    expect(doc.querySelector('#sec-notices .need-title')!.textContent).toBe('Mac Mini has no signed-in account, so nothing can run there.');
-    expect(doc.querySelector('#sec-notices a')!.getAttribute('href')).toBe('#/capacity/accounts?s=needs');
+    expect(doc.querySelector('.page-title')!.textContent).toBe('Sign-in repair');
+    expect(doc.querySelector('#sec-notices')).toBeNull();
+    expect(doc.querySelector('#sec-needs')?.textContent).toContain('This repair needs you to complete sign-in.');
+
     (doc.querySelector('#sec-needs button.btn-quiet') as HTMLButtonElement).click();
     await tick(3);
     const pin = doc.querySelector('.pin-input') as HTMLInputElement;
@@ -315,14 +395,14 @@ describe('accounts page in a DOM', () => {
   const openSignIn = async (submitAnswer: Record<string, unknown>, completions: Array<Record<string, unknown>>) => {
     const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
     const gets: string[] = [];
-    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts' });
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts?s=needs' });
     const g = globalThis as Record<string, unknown>;
     Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
     dom.window.localStorage.setItem('instar_token', 't');
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts: [row({ status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mac Studio' })], pool: { failed: [] } },
-      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [{ id: 'owner', accountId: 'luna', machineId: 'm2', state: 'waiting-operator-only' }] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
     };
     g.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
       if (opts && opts.method === 'POST') {
@@ -396,7 +476,7 @@ describe('accounts page in a DOM', () => {
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts, pool: { failed: [] } },
-      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [{ id: 'owner', accountId: 'luna', machineId: 'm2', state: 'waiting-operator-only' }] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
     };
     dom.window.localStorage.setItem('instar_token', 't');
     g.fetch = async (url: string) => (table[url] === undefined ? { ok: false, status: 404, json: async () => ({}) } : { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(table[url])) });
@@ -409,7 +489,7 @@ describe('accounts page in a DOM', () => {
 
   it('a routine pool shows no notice spot and no warning title', async () => {
     const doc = await render([full('Adriana', 100), full('Echo', 100), full('Dawn', 89)]);
-    expect(doc.querySelector('.page-title')!.textContent).toBe('Accounts');
+    expect(doc.querySelector('.page-title')!.textContent).toBe('Account usage');
     expect(doc.querySelector('#sec-notices')).toBeNull();
     expect(doc.querySelector('.hero-ask')).toBeNull();
     expect(doc.querySelectorAll('.acct-row')).toHaveLength(3);

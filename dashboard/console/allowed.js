@@ -70,8 +70,15 @@ export async function renderAllowed(main, ctx) {
     ),
     el('p', { class: 'foot-note' }, el('a', { href: legacyHref('features'), text: 'Open features in the legacy dashboard' }))));
 
-  const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
-  if (want) {
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  const want = query.get('s');
+  if (want === 'approvals' && query.has('request')) {
+    const id = query.get('request');
+    const approvals = main.querySelector('#sec-approvals');
+    const request = Array.from(approvals.querySelectorAll('[data-approval-request]'))
+      .find(card => card.dataset.approvalRequest === id);
+    arrivalScroll(request || approvals);
+  } else if (want) {
     arrivalScroll(main.querySelector(`#sec-${want}`));
   }
 }
@@ -89,7 +96,7 @@ function approvalBlock(model) {
       el('p', { class: 'confirm-text', text: r.sub }),
       el('p', { class: 'confirm-text', text: 'On iPhone, open this agent’s Permissions screen, then Changes to approve. On Mac, open Changes to approve in the agent window.' }),
       note('Review and confirm in the app or the exact private chat card. This console page does not approve the request.'));
-    wrap.append(el('div', { class: 'need-card' },
+    wrap.append(el('div', { class: 'need-card', 'data-approval-request': r.requestId },
       el('p', { class: 'need-title', text: r.main }),
       el('p', { class: 'need-sub', text: r.sub }),
       el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'How to approve', onclick: show }),

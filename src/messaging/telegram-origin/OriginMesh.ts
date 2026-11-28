@@ -117,7 +117,9 @@ export async function handleOriginMesh(options: {
         messageIds: verdict.messageIds,
         // §3b item 1 — the classified verdict travels with the raw state. An older
         // asker ignores these fields; the ladder still reads only `state`.
-        role, outcome: verdict.outcome, safeToResend: verdict.safeToResend, reason: verdict.reason ?? null, failure: verdict.failure ?? null,
+        role, outcome: verdict.outcome === 'confirmation-expired' ? 'unknown' : verdict.outcome,
+        ...(verdict.outcome === 'confirmation-expired' ? { confirmationExpired: true } : {}),
+        safeToResend: verdict.safeToResend, reason: verdict.reason ?? null, failure: verdict.failure ?? null,
         supersededBy: verdict.supersededBy ?? null, duplicateOfMessageId: verdict.duplicateOfMessageId ?? null,
         originMachineId: record.originMachineId, detail: verdict.detail,
         // native-conversation-forwarded-advisory item 3 — the recorded verdict goes only to the machine that

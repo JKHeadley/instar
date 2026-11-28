@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "delight-the-user-standard",
+  "sessionId": "024790f2-113e-4d72-9108-6bbb038e5b2b",
+  "timestamp": "2026-11-19T04:59:33.372Z",
+  "artifactPath": "upgrades/side-effects/delight-the-user-standard.md",
+  "artifactSha256": "a74d38c1d632f631b059addbc81ee3dfd531fbbe680f72703add99be4ebb7218",
+  "specPath": "docs/specs/delight-the-user-standard.md",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/interaction-family-delight-the-user-2026-11-18.json",
+    "docs/specs/delight-the-user-standard.eli16.md",
+    "docs/specs/delight-the-user-standard.md",
+    "docs/specs/reports/delight-the-user-standard-convergence.md",
+    "docs/specs/reports/interaction-family-delight-the-user-review-2026-11-18.md",
+    "docs/standards-registry-area-audits.json",
+    "scripts/instar-dev-precommit.js",
+    "scripts/lib/delight-the-user.mjs",
+    "scripts/lib/operator-surface.mjs",
+    "skills/instar-dev/templates/side-effects-artifact.md",
+    "tests/unit/delight-the-user-gate.test.ts",
+    "tests/unit/delight-the-user-precommit.test.ts",
+    "tests/unit/operator-surface-gate.test.ts",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/side-effects/delight-the-user-standard.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A ratified constitution article plus a new blocking commit gate that widens the gate's scope to every screen file; a revert undoes it, but it changes every instar developer's commit path and edits the constitution, so the full chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

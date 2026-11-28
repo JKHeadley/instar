@@ -1,3 +1,4 @@
+import { pendingUpdateRestartTarget, readRestartRequestFile, replaceRestartRequestFile, withRestartRequestFileAsync } from '../core/restartRequestFile.js';
 import { workBoardEnabled } from '../core/WorkCardStore.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
@@ -1404,6 +1405,7 @@ export class AgentServer {
   }
 
   constructor(options: {
+    plannedRestartLeaseAdmission?: import('./routes.js').RouteContext['plannedRestartLeaseAdmission'];
     config: InstarConfig;
     sessionManager: SessionManager;
     terminateSessionAuthority?: SessionTerminateAuthority;
@@ -6842,6 +6844,7 @@ export class AgentServer {
         { ...cadenceRaw, enabled: true },
       ) : null);
     const routeCtx: import('./routes.js').RouteContext = {
+      plannedRestartLeaseAdmission: options.plannedRestartLeaseAdmission,
       windowLifecycleNow: options.windowLifecycleNow,
       windowRunLivenessAuthority,
       windowRunCadenceExecutor,
@@ -8347,10 +8350,19 @@ export class AgentServer {
         telegramTopics: options.telegram ? () => {
           // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
           const projectTitles = cosProjectTitles();
-          return options.telegram!.getAllTopicMappings().map((m) => {
-          const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
+          const mappings = options.telegram!.getAllTopicMappings();
+          // Previews read only the tail cache or the background index, never the log itself: a
+          // per-topic getTopicHistory here scanned the whole log once per cold topic on the
+          // request path (2026-11-27 Laptop stall). A topic not indexed yet shows no preview.
+          const tg = options.telegram!;
+          const latest = typeof tg.latestTopicEntries === 'function' ? tg.latestTopicEntries(mappings.map((m) => m.topicId)) : null;
+          const rows = mappings.map((m) => {
+          // An adapter without the index (test doubles) keeps the old per-topic read.
+          const last = latest ? latest.get(m.topicId) ?? undefined : tg.getTopicHistory(m.topicId, 1)[0];
           return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
           });
+          const unknown = latest ? [...latest.values()].some((v) => v === undefined) : false;
+          return unknown ? Object.assign(rows, { partial: true as const }) : rows;
         } : undefined,
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
@@ -10154,9 +10166,13 @@ export class AgentServer {
         expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         pid: process.pid,
       };
-      const tmp = `${flagPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, flagPath);
+      const existingUpdate = await withRestartRequestFileAsync(flagPath, () => {
+        const previous = readRestartRequestFile(flagPath);
+        const update = pendingUpdateRestartTarget(flagPath, previous);
+        if (!update) replaceRestartRequestFile(flagPath, JSON.stringify(data, null, 2), previous);
+        return update;
+      });
+      if (existingUpdate) return true;
       console.log(`[instar] supervised restart requested by ${requestedBy} (${reason})`);
       return true;
     } catch (err) {
