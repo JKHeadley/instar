@@ -101,7 +101,7 @@ $SUDO $PWPOLICY -u "$PROOF_USER" -clearaccountpolicies >/dev/null
 # the exact "not a member" answer (an error, a missing tool, "is a member") refuses.
 if [ "$($MEMBERUTIL checkmembership -U "$PROOF_USER" -G admin 2>/dev/null || true)" != "user is not a member of the group" ]; then
   unset PW
-  echo "refusing: $PROOF_USER is not confirmed outside the admin group; remove it (remove-proof-user.sh --fixture $FIXTURE)" >&2
+  echo "refusing: $PROOF_USER is not confirmed outside the admin group. remove-proof-user.sh refuses it too, so a person deletes it by hand (System Settings, Users & Groups); its vault key is $VAULT_KEY" >&2
   exit 1
 fi
 printf '%s' "$PW" | $SUDO python3 "$HERE/pty-feed.py" --prompts 1 --timeout 30 -- $DSCL . -authonly "$PROOF_USER"

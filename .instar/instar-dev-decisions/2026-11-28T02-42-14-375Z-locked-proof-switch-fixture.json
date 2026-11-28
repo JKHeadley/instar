@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-28T02:42:14.375Z",
+  "slug": "locked-proof-switch-fixture",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/locked-proof/create-proof-user.sh"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "message text only"
+  },
+  "verdict": "pass"
+}

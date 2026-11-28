@@ -3,7 +3,8 @@
 **Version / slug:** `locked-proof-switch-fixture`
 **Date:** `2026-11-27`
 **Author:** `echo`
-**Second-pass reviewer:** `pending (rule 7, before a queue place)`
+**Second-pass reviewer:** `independent subagent review, 2026-11-27 15:34 PT — concur`
+**Reviewer:** independent second-pass subagent (fresh context, given the code not the author's conclusion); verdict concur, no blocking defect
 
 ## Summary of the change
 
@@ -44,3 +45,11 @@ Machine-local by design: one proof Mac, run by hand.
 ## 8. Rollback cost
 
 A git revert. An instarproofswitch already created is removed with `remove-proof-user.sh --fixture switch --execute`. Its vault key is then deleted by the operator-side agent.
+
+## Class-Closure Declaration
+
+unbounded-self-action: closure n/a (negative declaration). Two operator-run scripts that each act once on one fixed account and then exit. No loop, no retry and no self-trigger.
+
+## Second-pass review
+
+An independent reviewer read 4d08b3d5c and ran both scripts against stand-in commands only. Verdict: concur, no blocking defect. Fixed after review: the admin-refusal message pointed to remove-proof-user.sh, which refuses that same account; it now says a person deletes it by hand. Noted, not changed: "live" means on the console. A switch account still logged in behind fast user switching is stopped and deleted, which is what teardown wants. The full-name parse trims spaces, not tabs, so a tab-indented value refuses, which is the safe direction. A failed existence read exits 0 as "no user", as before this change.

@@ -25,3 +25,5 @@ The scripts ship now. Nothing creates the account at merge. It is created by han
 ## What you actually need to decide
 
 Nothing.
+
+An independent reviewer checked both scripts and agreed nothing blocks. One message was reworded after review.
