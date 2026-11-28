@@ -2280,6 +2280,16 @@ export function classifyReviewFailure(err: unknown): string {
 
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
+  // review-helper-stale-module: the account refused the MODEL itself (the
+  // ChatGPT-account "not supported" 400, which the Codex adapter raises as an
+  // AuthError "Codex subscription auth rejected model: ..."). Its own class, so
+  // a stale model table reads as that and not as a generic failure. Checked
+  // before the quota/rate words: a refusal is not cleared by waiting.
+  // The generic form needs the refusal to follow the model id directly, so a
+  // parameter refusal ("model X: response_format ... is not supported") is not taken.
+  if (/not supported when using codex with a chatgpt account|auth rejected model|model ['"`]?[\w.:/-]+['"`]? (is not supported|is unsupported|does not exist)/.test(lower)) {
+    return 'model-unsupported';
+  }
   if (/weekly.?limit|out of usage/.test(lower)) {
     // Message-shaped fallback, deliberately NARROW: only the two wordings grok
     // actually emits for a weekly-pool wall. The first draft also matched

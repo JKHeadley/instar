@@ -105,10 +105,15 @@ describe('cross-model-review.mjs module resolution ladder (round-9, sixth load-p
     const shadowPkg = path.join(home, '.instar', 'shadow-install', 'node_modules', 'instar');
     fs.mkdirSync(shadowPkg, { recursive: true });
     fs.symlinkSync(path.join(REPO_ROOT, 'dist'), path.join(shadowPkg, 'dist'), 'dir');
+    // A real install carries its package.json; without it the ladder classes the
+    // folder an orphan build (review-helper-stale-module).
+    fs.writeFileSync(path.join(shadowPkg, 'package.json'), JSON.stringify({ name: 'instar' }));
 
     const report = await runDetect(installed, home);
     expect(fs.realpathSync(report.resolvedModulePath)).toBe(fs.realpathSync(BUILT_MODULE));
     expect(report.resolvedModulePath).toContain(path.join('.instar', 'shadow-install'));
+    // Earned by a fresh install, not by the never-block fallback.
+    expect((report as DetectReport & { moduleStale?: boolean }).moduleStale).toBeUndefined();
   });
 
   // ── round-10 (integration): the module ladder was only ONE of three
@@ -124,6 +129,9 @@ describe('cross-model-review.mjs module resolution ladder (round-9, sixth load-p
     const shadowPkg = path.join(home, '.instar', 'shadow-install', 'node_modules', 'instar');
     fs.mkdirSync(shadowPkg, { recursive: true });
     fs.symlinkSync(path.join(REPO_ROOT, 'dist'), path.join(shadowPkg, 'dist'), 'dir');
+    // A real install carries its package.json; without it the ladder classes the
+    // folder an orphan build (review-helper-stale-module).
+    fs.writeFileSync(path.join(shadowPkg, 'package.json'), JSON.stringify({ name: 'instar' }));
 
     // The documented invocation form: a repo-relative path, run from the repo.
     const rel = path.join('docs', 'specs', 'grok-build-framework-integration.md');
@@ -154,6 +162,9 @@ describe('cross-model-review.mjs module resolution ladder (round-9, sixth load-p
     const shadowPkg = path.join(home, '.instar', 'shadow-install', 'node_modules', 'instar');
     fs.mkdirSync(shadowPkg, { recursive: true });
     fs.symlinkSync(path.join(REPO_ROOT, 'dist'), path.join(shadowPkg, 'dist'), 'dir');
+    // A real install carries its package.json; without it the ladder classes the
+    // folder an orphan build (review-helper-stale-module).
+    fs.writeFileSync(path.join(shadowPkg, 'package.json'), JSON.stringify({ name: 'instar' }));
 
     let stderr = '';
     try {

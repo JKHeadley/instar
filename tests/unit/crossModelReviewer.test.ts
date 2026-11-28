@@ -290,6 +290,22 @@ describe('classifyReviewFailure (degraded reasons)', () => {
     expect(classifyReviewFailure(new Error('ETIMEDOUT'))).toBe('timeout');
   });
 
+  it('classifies an account refusal of the model as model-unsupported, not a generic error', () => {
+    // The exact wording the Codex adapter raises for the ChatGPT-account 400
+    // (the Studio stale-module incident: the helper asked for gpt-5.5).
+    expect(classifyReviewFailure(new Error(
+      "Codex subscription auth rejected model: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+    ))).toBe('model-unsupported');
+    expect(classifyReviewFailure(new Error('The model gpt-5.5 does not exist'))).toBe('model-unsupported');
+    expect(classifyReviewFailure(new Error("The model 'gpt-6.2-astra' is not supported"))).toBe('model-unsupported');
+    // A parameter refusal that merely mentions the model is not a model refusal.
+    expect(classifyReviewFailure(new Error('model gpt-6.2-astra: response_format json_schema is not supported'))).toBe('error');
+    // A refusal is checked before the quota words, and the quota words keep their class.
+    expect(classifyReviewFailure(new Error('quota exceeded'))).toBe('rate-limited');
+    // An unsupported OPTION is not a model refusal.
+    expect(classifyReviewFailure(new Error('flag --foo is not supported'))).toBe('error');
+  });
+
   it('falls back to generic error', () => {
     expect(classifyReviewFailure(new Error('Codex CLI error: nonzero exit'))).toBe('error');
     expect(classifyReviewFailure('weird non-error throw')).toBe('error');
