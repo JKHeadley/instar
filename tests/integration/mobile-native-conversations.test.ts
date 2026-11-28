@@ -106,6 +106,7 @@ function signed(e: Env, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', p: string, 
   return raw ? q.set('Content-Type', 'application/json').send(raw.toString()) : q;
 }
 const bearer = (e: Env, method: 'get' | 'post', p: string) => request(e.app)[method](p).set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo');
+const syntheticCredentialText = 'my key is sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH';
 const rid = () => `${Date.now()}-${crypto.randomUUID()}`;
 async function create(e: Env, title = 'Weekend plans') {
   const r = await signed(e, 'POST', '/mobile/conversations', { title, requestId: rid() });
@@ -184,7 +185,7 @@ describe('native app conversations — routes', () => {
       .map((n) => fs.readFileSync(path.join(e.dir, 'app-conversations', n), 'utf8')).join('');
     expect(onDisk).not.toContain('secretpartABC');
     expect(onDisk).toContain('"redaction"');
-    const cred = 'my key is sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH';
+    const cred = syntheticCredentialText;
     const c = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: cred, requestId: rid() });
     expect(c.body).toMatchObject({ ok: true, credentialShaped: true });
     expect(e.dispatched[1]!.text).toBe(cred);
@@ -242,6 +243,61 @@ describe('native app conversations — routes', () => {
     const c = await signed(e, 'POST', '/mobile/conversations', { title: 'x', requestId: rid() });
     expect(c.status).toBe(503);
     expect(c.body.error).toBe('conversation-recording-disabled');
+  });
+
+  it('resumes the original saved send when the owner returns without dispatching it twice', async () => {
+    const lease = { held: false };
+    const e = setup({ lease, dispatchDelayMs: 50 });
+    const key = await create(e);
+    const endpoint = `/mobile/chat/app/${key}`;
+    const send = { text: 'hello after recovery', requestId: rid() };
+    const unavailable = await signed(e, 'POST', endpoint, send);
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.body.error).toBe('owner-unavailable');
+    expect(e.dispatched).toHaveLength(0);
+
+    lease.held = true;
+    const changed = await signed(e, 'POST', endpoint, { ...send, text: 'different text' });
+    expect(changed.status).toBe(409);
+    expect(e.dispatched).toHaveLength(0);
+    const replies = await Promise.all([
+      signed(e, 'POST', endpoint, send),
+      signed(e, 'POST', endpoint, send),
+    ]);
+    expect(replies.map((reply) => reply.status).sort()[0]).toBe(200);
+    expect(replies.every((reply) => [200, 202].includes(reply.status))).toBe(true);
+    expect(replies.some((reply) => reply.status === 200 && reply.body.deliveryState === 'delivered')).toBe(true);
+    const replay = await signed(e, 'POST', endpoint, send);
+    expect(replay.body).toMatchObject({
+      eventId: unavailable.body.eventId, messageId: unavailable.body.messageId, deliveryState: 'delivered',
+    });
+    expect(e.dispatched).toHaveLength(1);
+    expect(e.svc.store.browseMessages(key, null, 10).messages).toMatchObject([
+      { messageId: unavailable.body.messageId, text: send.text, deliveryState: 'delivered' },
+    ]);
+  });
+
+  it('does not resume a saved send that would change under the current credential policy', async () => {
+    const lease = { held: false };
+    const e = setup({ lease });
+    const key = await create(e);
+    const endpoint = `/mobile/chat/app/${key}`;
+    const send = { text: syntheticCredentialText, requestId: rid() };
+    const unavailable = await signed(e, 'POST', endpoint, send);
+    expect(unavailable.status).toBe(503);
+    const configDir = path.join(e.dir, '.instar');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ security: { credentialScrub: { enabled: true } } }));
+    lease.held = true;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6000);
+    try {
+      const replay = await signed(e, 'POST', endpoint, send);
+      expect(replay.status).toBe(409);
+      expect(replay.body).toMatchObject({ error: 'not-delivered', messageId: unavailable.body.messageId });
+      expect(e.dispatched).toHaveLength(0);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('reply: 409 not-owner without the bind-app binding, accepted on the owner, idempotent by delivery id', async () => {

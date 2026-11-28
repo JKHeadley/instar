@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-28T05:17:33.002Z",
+  "slug": "mobile-owner-unavailable-replay",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 222,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobileChatRequests.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 142,
+    "deletedLines": 80
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

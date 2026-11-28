@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "mobile-owner-unavailable-replay",
+  "sessionId": "586b5f2c-a8c0-4090-9063-c4dcf793645f",
+  "timestamp": "2026-11-28T05:16:52.076Z",
+  "artifactPath": "upgrades/side-effects/mobile-owner-unavailable-replay.md",
+  "artifactSha256": "f9f0a96e9f32075f8b5bedda8a57fbf9b116d97a31e368d7d49339aafe8d86dd",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    "docs/specs/mobile-native-conversations.eli16.md",
+    "docs/specs/mobile-native-conversations.md",
+    "src/core/MobileChatRequests.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/mobile-chat-requests.test.ts",
+    "upgrades/next/mobile-owner-unavailable-replay.md",
+    "upgrades/side-effects/mobile-owner-unavailable-replay.eli16.md",
+    "upgrades/side-effects/mobile-owner-unavailable-replay.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The persisted dispatch claim governs request idempotency and restart recovery.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
