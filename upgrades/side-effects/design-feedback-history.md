@@ -53,3 +53,7 @@ Artifact second-pass: boundary reviewer concurs with exact pure scope and resour
 ## Update 2026-11-27 (after merging the updated inspector and main)
 
 Main gained DF-0002, DF-0003 and DF-0004, recorded in one changelog row that named all three, and that row sat after a blank line, so the table reader skipped it. Two changes follow. The tests now read the live standard through `tests/fixtures/designStandardForEntries.ts`, which keeps only DF-0001's rules and changelog rows, so they test this check, not the corpus. And the standard's 2026-11-22 row is split into one row per entry (DS-LAYOUT-12 for DF-0002, DS-ACTION-8 for DF-0003, DS-LAYOUT-13 for DF-0004), with the blank line removed so the table reads as one table; no rule text changes. Run over the real entries on the merged tree, this check now reports no changelog ambiguity; what remains is the three newer entries not yet in the canonical entry format, which the stack migrates once each has its card.
+
+## Second-pass review
+
+**Reviewer:** a fresh, independent Claude Opus 5.5 second-pass reviewer, not the author, started by the Design Standards session on 2026-11-27 (rule 7 pre-queue review, 12:22 to 12:24 PT); final verdict concur, with any wording findings fixed in this head.
