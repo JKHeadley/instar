@@ -5,7 +5,7 @@
  * topic history retrieval, registry reload from disk.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { createTempProject } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
@@ -32,6 +32,19 @@ describe('TelegramAdapter', () => {
   function createAdapter() {
     return new TelegramAdapter(fakeConfig, project.stateDir);
   }
+
+  it('preserves a native reply receipt through the real polling callback without parsing quoted text', async () => {
+    const adapter = new TelegramAdapter({ ...fakeConfig, authorizedUserIds: [777] }, project.stateDir, { suppressLifelineAutoCreate: true });
+    const seen = vi.fn(async (_message: any) => {}); adapter.onTopicMessage = seen;
+    const process = adapter as unknown as { processUpdate(update: unknown): Promise<void> };
+    const message = { message_id: 502, message_thread_id: 42, date: 1, from: { id: 777, first_name: 'Fixture' },
+      chat: { id: -1001234567890, type: 'supergroup' }, text: 'yes', reply_to_message: { message_id: 490 } };
+    await process.processUpdate({ update_id: 1, message });
+    expect(seen).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'tg-502', metadata: expect.objectContaining({ replyToMessageId: 490 }) }));
+    await process.processUpdate({ update_id: 2, message: { ...message, message_id: 503, text: '> Question 490\nyes', reply_to_message: undefined } });
+    expect(seen.mock.calls.at(-1)![0].metadata.replyToMessageId).toBeUndefined();
+    await adapter.stop();
+  });
 
   describe('Topic-Session Registry', () => {
     it('registers and retrieves topic-session mapping', () => {

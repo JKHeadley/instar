@@ -12,25 +12,16 @@
  *     no fuzzy matcher ever holds write authority. Out-of-grammar phrasings
  *     ride the propose-then-confirm lane instead.
  *
- *  2. The ARMED-CONFIRM slot manager (`ProfileConfirmSlots`). ALL THREE
- *     confirm surfaces — §10.1 propose-confirm, §8 switch-now, §10.4
- *     re-apply-cooldown — share ONE armed slot per topic (round-7: a bare
- *     "yes" must never be ambiguous about which confirm it fires). The slot
- *     enforces:
- *      - TTL (`switchNowConfirmTtlMs`),
- *      - event-based ordering on PLATFORM MESSAGE IDS (the confirm's id must
- *        be > the latest echo's platform-returned id; ties refused toward
- *        re-echo — never a cross-clock timestamp compare, round-7),
- *      - supersession (a re-proposal invalidates any in-flight confirm; the
- *        confirm must answer the LATEST echo),
- *      - a re-proposal rate bound per topic (churn is a suspicion signal —
- *        past the bound the slot refuses re-proposals for a cooldown and
- *        tears down, round-7),
- *      - forwarded-content rejection (a message carrying platform forward
- *        metadata never matches ANY ingress recognition, round-5).
+ *  2. The legacy ARMED-CONFIRM slot manager retains its existing recovery
+ *     and compatibility protocol. Identified HTTP proposals now use its
+ *     separate `proposals` collection: exact yes plus a delivered native
+ *     reply, independent requests and per-attempt receipts. Agent messages
+ *     never delete those identified questions. The legacy slot keeps TTL,
+ *     ordering, rate and forwarded-content checks for its existing callers.
  */
 
 import type { EffortLevel, ProfilePatchInput } from './topicProfileValidation.js';
+import { ProfileProposalRequests } from './ProfileProposalRequests.js';
 
 // ── trigger grammar ─────────────────────────────────────────────────────────
 
@@ -184,6 +175,7 @@ const DEFAULT_MAX_PROPOSALS = 5;
 const DEFAULT_PROPOSAL_WINDOW_MS = 600_000;
 
 export class ProfileConfirmSlots {
+  readonly proposals: ProfileProposalRequests;
   private slots = new Map<string, ArmedConfirm>();
   /** Re-proposal timestamps per topic (rate bound, round-7). */
   private proposalTimes = new Map<string, number[]>();
@@ -199,6 +191,8 @@ export class ProfileConfirmSlots {
       ...opts,
     };
     this.now = opts.now ?? (() => Date.now());
+    this.proposals = new ProfileProposalRequests({ now: this.now, ttlMs: opts.ttlMs,
+      maxSends: this.opts.maxProposalsPerWindow, windowMs: this.opts.proposalWindowMs });
   }
 
   private ttl(): number {
