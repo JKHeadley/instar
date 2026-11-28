@@ -3405,6 +3405,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninDropProfileFormPointer(result);
     this.migrateSubscriptionSigninApprovalBoundary(result);
     this.migrateSubscriptionSigninDeviceLimit(result);
+    this.migrateSubscriptionSigninAuthenticatorOverPhone(result);
     this.migrateNormalChromeBrowserSkill(result);
     this.migrateAccountActionSafetySkill(result);
     this.migrateNormalChromeWindowsBlankPageNote(result);
@@ -7377,6 +7378,46 @@ export class PostUpdateMigrator {
       result.upgraded.push(`skills/subscription-signin/SKILL.md (added the device-limit ${changes.join(' and ')}; local edits kept)`);
     } catch (err) {
       result.errors.push(`skills/subscription-signin/SKILL.md device-limit migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Authenticator over a phone prompt (spec relogin-authenticator-over-phone-prompt): an installed
+   * /subscription-signin skill gains one agent-run line saying the repair helper follows its prompt
+   * for Google's phone prompt, and that the prompt wins where the two differ. The behaviour itself
+   * lives only in the dev-gated prompt. One idempotent insert after the stock phone-tap line; local
+   * edits kept; a CRLF copy stays CRLF; a copy without the stock anchor is reported once as
+   * customised and left untouched.
+   */
+  private migrateSubscriptionSigninAuthenticatorOverPhone(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'subscription-signin', 'SKILL.md');
+    const marker = "- **Google's phone prompt in a repair:**";
+    const anchor = '- **A phone "Is it you?" tap:**';
+    try {
+      if (!fs.existsSync(skillFile)) return; // installBuiltinSkills handles fresh installs
+      const raw = fs.readFileSync(skillFile, 'utf8');
+      if (!raw.includes('name: subscription-signin')) return;
+      if (raw.includes(marker)) return;
+      const crlf = raw.includes('\r\n');
+      const current = crlf ? raw.replace(/\r\n/g, '\n') : raw;
+      const lineOf = (text: string, start: string): string | null => {
+        const at = text.indexOf(start);
+        if (at < 0) return null;
+        const eol = text.indexOf('\n', at);
+        return text.slice(at, eol === -1 ? text.length : eol + 1);
+      };
+      const anchorLine = lineOf(current, anchor);
+      const newLine = lineOf(SUBSCRIPTION_SIGNIN_SKILL_CONTENT, marker);
+      if (!anchorLine || !newLine || !anchorLine.endsWith('\n')) {
+        result.skipped.push('skills/subscription-signin/SKILL.md: customized — left untouched (no authenticator-over-phone line)');
+        return;
+      }
+      const at = current.indexOf(anchorLine) + anchorLine.length;
+      const next = current.slice(0, at) + newLine + current.slice(at); // bounded-input-reviewed: splices installed skill text at an anchor; no prompt input is cut
+      fs.writeFileSync(skillFile, crlf ? next.replace(/\n/g, '\r\n') : next);
+      result.upgraded.push('skills/subscription-signin/SKILL.md (added the agent-run phone-prompt line; local edits kept)');
+    } catch (err) {
+      result.errors.push(`skills/subscription-signin/SKILL.md authenticator-over-phone migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

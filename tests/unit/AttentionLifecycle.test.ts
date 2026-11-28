@@ -61,10 +61,28 @@ describe('class + expiry', () => {
       row({ id: 's1', category: 'security', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
       row({ id: 's2', title: 'Rotate exposed GitHub access token', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
       row({ id: 's3', sticky: true, updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
+      // Both were missed on the 2026-10-26 cleanup: a secret named inside an identifier,
+      // and a live third-party grant.
+      row({ id: 's4', title: 'Rotate github_token (printed into a session transcript)', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
+      row({ id: 's5', title: 'Active email authorization for someone else on this machine', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
+      row({ id: 's6', title: 'Revoke the stale OAuth grant on the shared mailbox', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
+      row({ id: 's7', title: 'OAuth grant revoked on the shared mailbox', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
+      row({ id: 's8', title: 'Revocation of the OAuth consent for the old tool is pending', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
+      row({ id: 's9', title: 'Revoke app access for the retired integration', updatedAt: new Date(NOW - 400 * DAY).toISOString() }),
     ]) {
       const d = decideAttentionExpiry(r, cfg, NOW);
       expect(d.cls).toBe('security');
       expect(d.expire).toBe(false);
+    }
+  });
+  it('the security floor does not swallow ordinary notices', () => {
+    for (const title of ['Account enrollment needs your check on "this machine"', 'Credential identity drift: acct-1', 'Claude Code sign-in repair', 'Rotating log files on the Mini',
+      // Routine OAuth activity: sign-in and quota traffic, never a reason to keep an item forever.
+      'OAuth token refreshed for the Claude account', 'Codex OAuth sign-in needed on the Laptop', 'Quota read failed: OAuth usage endpoint returned 429',
+      // A provider's routine expired-token error is sign-in traffic, not a revoke ask. The OAuth word
+      // makes this depend on the routine-wording blanking: without it the revoke clause would match.
+      'OAuth sign-in refresh failed: invalid_grant: Token has been expired or revoked']) {
+      expect(classifyAttentionLifecycle(row({ id: 'x', title }))).not.toBe('security');
     }
   });
   it('operator-asked (agent-raised / needsUser / decision category / URGENT) expires at 30 days, not 14', () => {

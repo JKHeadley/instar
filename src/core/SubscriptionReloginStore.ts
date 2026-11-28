@@ -145,6 +145,13 @@ CREATE TABLE IF NOT EXISTS repair_notifications (
  UNIQUE(episodeId,kind), FOREIGN KEY(episodeId) REFERENCES repair_episodes(id)
 );
 CREATE INDEX IF NOT EXISTS idx_relogin_notifications_due ON repair_notifications(state,nextAttemptAt);
+CREATE TABLE IF NOT EXISTS authenticator_uses (
+ id INTEGER PRIMARY KEY, episodeId TEXT NOT NULL, driveId TEXT NOT NULL UNIQUE, grantedAt TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS authenticator_reviews (
+ useId INTEGER PRIMARY KEY, episodeId TEXT NOT NULL,
+ result TEXT NOT NULL CHECK(result IN ('pass','fail','inconclusive')), at TEXT NOT NULL
+);
 `;
 
 /**
@@ -286,7 +293,9 @@ export class SubscriptionReloginStore {
         // `suggest` is only reached for an open source, and a resolved incident is never reopened,
         // so this case is exactly a bookkeeping cancel that has since been undone.
         const lastEvent = prior.state === 'cancelled' ? (this.db.prepare(
-          'SELECT eventClass FROM repair_events WHERE episodeId=? ORDER BY id DESC LIMIT 1').get(prior.id) as { eventClass: string } | undefined) : undefined;
+          // The newest STATE CHANGE, not the newest row: audit rows (screen-state notes, authenticator
+          // reviews and events) are written with from = to and may land after the cancel.
+          'SELECT eventClass FROM repair_events WHERE episodeId=? AND fromState IS NOT toState ORDER BY id DESC LIMIT 1').get(prior.id) as { eventClass: string } | undefined) : undefined;
         // At most once per row, so a cell that keeps dropping out cannot keep restarting helpers.
         const reopenedBefore = Number((this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=?
           AND eventClass='candidate-readmitted-source-reopened'`).get(prior.id) as { n: number }).n) > 0;
@@ -380,7 +389,14 @@ export class SubscriptionReloginStore {
    */
   challengedSinceAdmission(id: string): boolean {
     // "No other healthy account to run the helper" is a seat shortage, not a challenge.
-    const row = this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=? AND eventClass IN ('operator-only-challenge','phone-tap-requested')
+    // A rejected or refused authenticator code counts as a challenge too (spec
+    // relogin-authenticator-over-phone-prompt): a slow retry must never bring fresh codes. Any
+    // granted code in an attempt that then did not succeed counts, even if the helper never
+    // reported the outcome (a lost answer, an exit after a rejection).
+    const row = this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=? AND (eventClass IN ('operator-only-challenge','phone-tap-requested')
+      OR eventClass LIKE 'helper-authenticator-rejected-%' OR eventClass LIKE 'helper-authenticator-code-refused-%'
+      OR eventClass LIKE 'helper-authenticator-code-1-%' OR eventClass LIKE 'helper-authenticator-code-2-%'
+      OR eventClass LIKE 'helper-authenticator-no-option-%')
       AND COALESCE(reason,'')<>'agent-no-healthy-seat'
       AND id > COALESCE((SELECT MAX(id) FROM repair_events WHERE episodeId=? AND eventClass IN
         ('candidate-admitted','candidate-readmitted-inputs-changed','candidate-readmitted-source-reopened',
@@ -501,6 +517,98 @@ export class SubscriptionReloginStore {
     this.enqueueNotification(ep.id, 'phone-tap', at);
   }
 
+  /**
+   * Audit the sign-in helper's requests and reports at Google's 2-Step Verification step (spec
+   * relogin-authenticator-over-phone-prompt), as `helper-authenticator-<label>`. The label is built
+   * by the server from closed sets (request or report, the server's heading class, the code number
+   * or the refusal reason). No state change and no notice. Five label families (`rejected-*`,
+   * `code-refused-*`, `code-1-*`, `code-2-*`, `no-option-*`) count as challenges in `challengedSinceAdmission`, so a slow
+   * retry never brings fresh codes; the rest are plain audit.
+   */
+  recordAuthenticatorEvent(id: string, label: string, at = this.isoNow()): void {
+    const ep = this.mustGet(id);
+    this.event(ep.id, at, ep.state, ep.state, `helper-authenticator-${label}`, ep.attemptCount);
+  }
+
+  /**
+   * Record one granted use of the authenticator step (spec relogin-authenticator-over-phone-prompt):
+   * one row per helper drive that was granted `intent`, in a table the store never prunes. A drive
+   * resumed after a restart is a new drive and so a new use that needs its own review (the strict,
+   * safe direction). Idempotent per drive.
+   */
+  recordAuthenticatorUse(id: string, driveId: string, at = this.isoNow()): void {
+    const ep = this.mustGet(id);
+    this.db.prepare('INSERT OR IGNORE INTO authenticator_uses(episodeId,driveId,grantedAt) VALUES(?,?,?)').run(ep.id, driveId, at);
+  }
+
+  /**
+   * Supervised first uses on this machine. While fewer than `SUPERVISED_AUTHENTICATOR_USES` uses
+   * have passed review, a new use may start only when every earlier use (other than the asking
+   * drive's own) has been reviewed; one failed review closes the step on this machine for good.
+   * Uses and reviews live in their own tables, which are never pruned. Read-only.
+   */
+  authenticatorSupervision(excludeDriveId?: string): AuthenticatorSupervision {
+    const n = (sql: string, ...args: unknown[]): number => Number((this.db.prepare(sql).get(...args) as { n: number }).n);
+    const grants = n('SELECT COUNT(*) n FROM authenticator_uses');
+    const passes = n("SELECT COUNT(*) n FROM authenticator_reviews WHERE result='pass'");
+    const fails = n("SELECT COUNT(*) n FROM authenticator_reviews WHERE result='fail'");
+    const unreviewed = n(`SELECT COUNT(*) n FROM authenticator_uses u WHERE u.driveId<>?
+      AND NOT EXISTS (SELECT 1 FROM authenticator_reviews r WHERE r.useId=u.id)`, excludeDriveId ?? '');
+    const state: AuthenticatorSupervision['state'] = fails > 0 ? 'review-failed'
+      : passes >= SUPERVISED_AUTHENTICATOR_USES ? 'open'
+        : unreviewed > 0 ? 'awaiting-review' : 'open';
+    return { state, grants, passes, fails, unreviewed, supervisedUses: SUPERVISED_AUTHENTICATOR_USES };
+  }
+
+  /**
+   * Record the review of one authenticator use of a FINISHED repair: pass or inconclusive go to the
+   * episode's oldest unreviewed use; a fail goes to its latest use and may override an earlier
+   * review (the off switch). Throws `relogin-episode-not-found`, `authenticator-review-not-applicable`,
+   * `authenticator-review-drive-live` or `authenticator-review-already-recorded`.
+   */
+  recordAuthenticatorReview(id: string, result: 'pass' | 'fail' | 'inconclusive', at = this.isoNow()): SubscriptionReloginEpisode {
+    const ep = this.mustGet(id);
+    let uses = this.db.prepare('SELECT id FROM authenticator_uses WHERE episodeId=? ORDER BY id').all(ep.id) as Array<{ id: number }>;
+    if (uses.length === 0) {
+      if (result !== 'fail') throw new Error('authenticator-review-not-applicable');
+      // A transcript can show a code entered without asking: a fail must still close the step.
+      this.db.prepare('INSERT OR IGNORE INTO authenticator_uses(episodeId,driveId,grantedAt) VALUES(?,?,?)').run(ep.id, `ungranted-${ep.id}`, at);
+      uses = this.db.prepare('SELECT id FROM authenticator_uses WHERE episodeId=? ORDER BY id').all(ep.id) as Array<{ id: number }>;
+    }
+    // Only a finished repair can be passed: the helper being supervised holds the agent's token. A
+    // fail can only close the step, so it is accepted at any time.
+    if (result !== 'fail' && !TERMINAL.has(ep.state) && ep.state !== 'waiting-operator-only' && ep.state !== 'suggested') {
+      throw new Error('authenticator-review-drive-live');
+    }
+    const reviewOf = (useId: number) => this.db.prepare('SELECT result FROM authenticator_reviews WHERE useId=?').get(useId) as { result: string } | undefined;
+    let target: number | undefined;
+    if (result === 'fail') {
+      target = uses[uses.length - 1]!.id;
+      if (reviewOf(target)?.result === 'fail') throw new Error('authenticator-review-already-recorded');
+    } else {
+      target = uses.find((u) => !reviewOf(u.id))?.id;
+      if (target === undefined) throw new Error('authenticator-review-already-recorded');
+    }
+    this.db.prepare(`INSERT INTO authenticator_reviews(useId,episodeId,result,at) VALUES(?,?,?,?)
+      ON CONFLICT(useId) DO UPDATE SET result=excluded.result, at=excluded.at`).run(target, ep.id, result, at);
+    this.event(ep.id, at, ep.state, ep.state, `authenticator-review-${result}`, ep.attemptCount);
+    return this.mustGet(ep.id);
+  }
+
+  /**
+   * Codes already granted since this episode's latest admission or approval (survives a server
+   * restart; a retry, readmission or operator resume starts a fresh count).
+   */
+  authenticatorCodesGranted(id: string): number {
+    const ep = this.mustGet(id);
+    return Number((this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=?
+      AND (eventClass LIKE 'helper-authenticator-code-1-%' OR eventClass LIKE 'helper-authenticator-code-2-%')
+      AND id > COALESCE((SELECT MAX(id) FROM repair_events WHERE episodeId=? AND eventClass IN
+        ('candidate-admitted','candidate-readmitted-inputs-changed','candidate-readmitted-source-reopened','slow-retry-approved','slow-retry-suggested',
+         'operator-retry-readmitted','operator-retry-approved','operator-approved','operator-resumed',
+         'unattended-policy-approved')), 0)`).get(ep.id, ep.id) as { n: number }).n);
+  }
+
   transition(id: string, input: {
     expectedVersion: number; to: SubscriptionReloginState; eventClass: string; at?: string;
     failureClass?: SubscriptionReloginFailureClass; nextAttemptAt?: string | null;
@@ -613,6 +721,21 @@ export class SubscriptionReloginStore {
         ? this.db.prepare('SELECT * FROM repair_episodes WHERE state=? ORDER BY createdAt DESC LIMIT ?').all(input.state, limit)
         : this.db.prepare('SELECT * FROM repair_episodes ORDER BY createdAt DESC LIMIT ?').all(limit));
     return rows.map((row) => coerceEpisode(row as SubscriptionReloginEpisode));
+  }
+  /**
+   * An audit note that changes nothing: one event row in the episode's current state (from = to),
+   * with the current attempt. Used for facts read at a failure, such as the screen state, so the
+   * trail can explain a failure without changing any transition's reason. No-op for an unknown
+   * episode, one whose version moved since the caller read it (a cancel or other transition won the
+   * race), or one already in a terminal state: a note must never become an episode's newest event
+   * after its ending, because re-admission reads the newest event class.
+   */
+  recordNote(id: string, expectedVersion: number, eventClass: string, reason: string | null, at = this.isoNow()): void {
+    normalizeEvent(eventClass);
+    const ep = this.get(id); if (!ep) return;
+    if (ep.version !== expectedVersion) return;
+    if (TERMINAL.has(ep.state)) return;
+    this.event(ep.id, at, ep.state, ep.state, eventClass, ep.attemptCount, reloginReasonToken(reason));
   }
   listEvents(episodeId: string, limit = 200): SubscriptionReloginEvent[] {
     return this.db.prepare('SELECT * FROM repair_events WHERE episodeId=? ORDER BY id DESC LIMIT ?')
@@ -768,6 +891,17 @@ export class SubscriptionReloginStore {
 function normalizeId(value: string, field: string): string {
   const v = String(value ?? '').trim(); if (!ID_RE.test(v)) throw new Error(`invalid-${field}-id`); return v;
 }
+/** Supervised first uses of the authenticator step per machine (spec relogin-authenticator-over-phone-prompt). */
+export const SUPERVISED_AUTHENTICATOR_USES = 3;
+export interface AuthenticatorSupervision {
+  state: 'open' | 'awaiting-review' | 'review-failed';
+  grants: number;
+  passes: number;
+  fails: number;
+  unreviewed: number;
+  supervisedUses: number;
+}
+
 /**
  * A repair reason is recorded only as a short machine token from the code's own error names
  * (`chrome-launch-timeout`, `plain-browser-apple-event-error--1743`, `relogin-profile-in-use`, ...).

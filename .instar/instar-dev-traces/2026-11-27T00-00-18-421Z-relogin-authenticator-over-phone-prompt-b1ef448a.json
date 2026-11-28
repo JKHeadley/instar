@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "slug": "relogin-authenticator-over-phone-prompt",
+  "sessionId": "05495e3f-bf2b-44d8-bd9c-039e1afdbbdc",
+  "timestamp": "2026-11-27T00:00:18.421Z",
+  "artifactPath": "upgrades/side-effects/relogin-authenticator-over-phone-prompt.md",
+  "artifactSha256": "1d102d0a3ef491788b64cbbc1fb4adbd7eed77188644e2124a09fce32ad458bf",
+  "specPath": "docs/specs/relogin-authenticator-over-phone-prompt.md",
+  "coveredFiles": [
+    "docs/defect-classes.json",
+    "docs/specs/carriers/relogin-authenticator-over-phone-prompt.json",
+    "docs/specs/relogin-authenticator-over-phone-prompt.eli16.md",
+    "docs/specs/relogin-authenticator-over-phone-prompt.md",
+    "docs/specs/reports/relogin-authenticator-over-phone-prompt-convergence.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SubscriptionReloginHelper.ts",
+    "src/core/SubscriptionReloginRuntime.ts",
+    "src/core/SubscriptionReloginStore.ts",
+    "src/core/types.ts",
+    "src/data/awareness/relogin-authenticator-over-phone.md",
+    "src/data/builtinSkillContent.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/integration/subscription-relogin-routes.test.ts",
+    "tests/unit/relogin-authenticator-over-phone-prompt.test.ts",
+    "upgrades/next/relogin-authenticator-over-phone-prompt.md",
+    "upgrades/side-effects/relogin-authenticator-over-phone-prompt.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Narrows a sign-in hard line and adds a server gate, a review route and new state on a path that acts on real Google accounts; not undone by a revert alone",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds no new self-triggered action: it only adds stop conditions to the existing slow retry (rejected, refused, granted or no-option authenticator outcomes now count as challenges, so fewer retries run); the new review route and helper notices are request-driven, never self-triggered"
+  }
+}

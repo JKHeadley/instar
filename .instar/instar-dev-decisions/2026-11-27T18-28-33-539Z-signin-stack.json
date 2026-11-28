@@ -1,0 +1,54 @@
+{
+  "ts": "2026-11-27T18:28:33.539Z",
+  "slug": "signin-stack",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 23,
+  "loc": 1356,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/commands/server.ts",
+      "src/core/AttentionLifecycle.ts",
+      "src/core/MachineLockStateReader.ts",
+      "src/core/PasskeyCellStateReader.ts",
+      "src/core/PasskeyChromeGate.ts",
+      "src/core/PasskeyColdProof.ts",
+      "src/core/PasskeyCredentialStore.ts",
+      "src/core/PasskeyLegacyAdoption.ts",
+      "src/core/PasskeyRepairAdmission.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginHelper.ts",
+      "src/core/SubscriptionReloginOrchestrator.ts",
+      "src/core/SubscriptionReloginPolicy.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/SubscriptionReloginStore.ts",
+      "src/core/types.ts",
+      "src/data/awareness/passkey-repair-and-legacy-adoption.md",
+      "src/data/awareness/relogin-authenticator-over-phone.md",
+      "src/data/builtinSkillContent.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/browser/chrome-js.sh"
+    ],
+    "addedLines": 1319,
+    "deletedLines": 37
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds no new self-triggered action: the authenticator outcomes only add stop conditions to the existing slow retry; the passkey step runs inside an already-admitted repair attempt and is switched off by default; the screen-state read and attention floor are signals; new routes are request-driven, never self-triggered"
+  },
+  "verdict": "blocked"
+}

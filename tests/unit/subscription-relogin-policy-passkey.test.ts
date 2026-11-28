@@ -39,6 +39,7 @@ describe('evaluateSubscriptionReloginAdmission — google-passkey', () => {
       ['rejected', 'passkey-cell-rejected'],
       ['suspended', 'passkey-suspended'],
       ['chrome-unverified', 'passkey-chrome-unverified'],
+      ['sign-in-off', 'passkey-sign-in-off'],
       ['unknown', 'passkey-cell-state-unknown'],
       [null, 'passkey-cell-state-unknown'],
       [undefined, 'passkey-cell-state-unknown'],

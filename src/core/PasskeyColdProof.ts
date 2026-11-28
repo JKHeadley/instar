@@ -58,6 +58,15 @@ export interface PasskeyColdProofInput {
   signOutUrl: string;
   /** The cell's Google-side removal state (§3.2): a pending/attested/verified cell's rejection is `removed-on-google`, never counted. */
   googleSideRemoval?: 'none' | 'pending' | 'attested' | 'verified';
+  /**
+   * REPAIR mode (spec §3.4 repair path; the two-step shape the Chief of Staff ruled on 2026-11-26):
+   * sign the account's OWN dedicated profile in to Google and LEAVE that session in place, so the
+   * provider sign-in that follows in the normal browser finds Google already signed in. The profile is
+   * NOT cleared first; a profile that is already past the sign-in page is left alone (`session-present`,
+   * outcome `unknown`, no key added: the live session is tried first, as today). The credential is still
+   * removed before the browser closes. Absent ⇒ the cold proof exactly as before.
+   */
+  keepSession?: boolean;
 }
 
 export interface PasskeyColdProofDeps {
@@ -116,12 +125,15 @@ export async function runPasskeyColdProof(deps: PasskeyColdProofDeps, input: Pas
     //    is anywhere near it. Opening on the sign-in URL first would present a stale cookie (a prior
     //    teardown whose sign-out failed) to Google once before the clear (second-pass finding).
     await browser.open('about:blank');
-    await browser.clearBrowsingData();
+    if (!input.keepSession) await browser.clearBrowsingData();
     await browser.navigateTo(input.signInUrl);
     const start = await browser.snapshot(input.canonicalEmail);
     finalPageClass = start.pageClass;
     if (!SIGNED_OUT_CLASSES.has(start.pageClass)) {
-      reason = start.pageClass === 'google-risk-challenge' ? 'risk-page-before-sign-in' : 'not-signed-out';
+      // Repair mode: only the signed-in landing (no sign-in class at all) counts as an existing
+      // session; an error or any other non-sign-in page is not evidence of one.
+      reason = start.pageClass === 'google-risk-challenge' ? 'risk-page-before-sign-in'
+        : input.keepSession && start.pageClass === 'unknown' ? 'session-present' : 'not-signed-out';
       riskPage = start.pageClass === 'google-risk-challenge';
       log(`[passkey-proof] not signed out (page ${start.pageClass}) — unknown`);
     } else {
@@ -178,8 +190,11 @@ export async function runPasskeyColdProof(deps: PasskeyColdProofDeps, input: Pas
         if (credentialAdded) { await browser.removeCredential(); teardown.credentialRemoved = true; }
         else teardown.credentialRemoved = true;
       } catch (err) { teardown.error = `remove:${err instanceof Error ? err.name || 'Error' : 'error'}`; }
-      try { await browser.navigateTo(input.signOutUrl); await browser.clearBrowsingData(); teardown.signedOut = true; }
-      catch (err) { teardown.error = `${teardown.error ? `${teardown.error};` : ''}signout:${err instanceof Error ? err.name || 'Error' : 'error'}`; }
+      // Repair mode keeps the Google session on purpose (the normal-browser provider step needs it).
+      if (!input.keepSession) {
+        try { await browser.navigateTo(input.signOutUrl); await browser.clearBrowsingData(); teardown.signedOut = true; }
+        catch (err) { teardown.error = `${teardown.error ? `${teardown.error};` : ''}signout:${err instanceof Error ? err.name || 'Error' : 'error'}`; }
+      }
       try { await browser.close(); } catch { /* @silent-fallback-ok — close is best-effort after teardown; the seat lease release is the caller's */ }
     }
   }

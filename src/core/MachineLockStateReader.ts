@@ -137,3 +137,17 @@ export class MachineLockStateReader {
 let active: MachineLockStateReader | null = null;
 export function setActiveMachineLockStateReader(reader: MachineLockStateReader | null): void { active = reader; }
 export function getActiveMachineLockStateReader(): MachineLockStateReader | null { return active; }
+
+/**
+ * The screen state as a short audit token for a failed browser repair: `locked`, `asleep`
+ * (screensaver or display sleep), `lock-flag-set` (the reading is `unknown` but the session's
+ * lock flag is set: locked or asleep, not confirmed), or null (awake, not applicable, or no
+ * flag). `unknown` is never reported as `locked`.
+ */
+export function screenStateToken(report: Pick<LockStateReport, 'lockState' | 'inputs'> | null): 'locked' | 'asleep' | 'lock-flag-set' | null {
+  if (!report) return null;
+  if (report.lockState === 'locked') return 'locked';
+  if (report.lockState === 'screensaver-or-display-sleep') return 'asleep';
+  if (report.lockState === 'unknown' && report.inputs?.flagLocked === true) return 'lock-flag-set';
+  return null;
+}

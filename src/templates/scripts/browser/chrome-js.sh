@@ -64,9 +64,21 @@ var t=spec('prop',w,'prop',$.NSAppleEventDescriptor.descriptorWithTypeCode(fc('a
 var ev=$.NSAppleEventDescriptor.appleEventWithEventClassEventIDTargetDescriptorReturnIDTransactionID(fc('CrSu'),fc('ExJa'),target,-1,0);
 ev.setParamDescriptorForKeyword(t,fc('----'));
 ev.setParamDescriptorForKeyword($.NSAppleEventDescriptor.descriptorWithString(js),fc('JvSc'));
-var err=Ref();
+// $() not Ref(): reading a Ref() out-parameter after a failed send crashes osascript (SIGSEGV in
+// JSOCRefPrototypeCreate, reproduced 2026-11-26); a $() NSError holder is safe and carries the code.
+var err=$();
 var res=ev.sendEventWithOptionsTimeoutError(0x3,30,err);
-if(res.isNil()){ 'ERR apple-event-failed (tab hung, window closed, or Apple Events JS off)' } else { var d=res.paramDescriptorForKeyword(fc('----')); d.isNil()?'(nil)':ObjC.unwrap(d.stringValue) }
+// The failure carries an OSStatus; name it, so "why" is not a guess (2026-11-26: a bare
+// apple-event-failed on two machines could not be told apart from a permission refusal).
+function why(e){var c=(e&&!e.isNil())?Number(e.code):NaN;
+ var m={'-1743':'not-permitted: macOS Automation permission for this caller is refused (System Settings > Privacy > Automation)',
+  '-1712':'timeout: the tab did not answer within 30s (busy or hung page, or a dialog is open)',
+  '-1728':'no-such-tab: Chrome has no window 1 or no active tab',
+  '-600':'process-gone: that Chrome process is no longer running',
+  '-609':'connection-invalid: that Chrome process quit or crashed during the call',
+  '-1708':'not-understood: Chrome refused execute javascript (Apple Events JS is off in this profile)'};
+ return isNaN(c)?'unknown':('code '+c+' '+(m[String(c)]||'unmapped'));}
+if(res.isNil()){ 'ERR apple-event-failed '+why(err)+' (tab hung, window closed, or Apple Events JS off)' } else { var d=res.paramDescriptorForKeyword(fc('----')); d.isNil()?'(nil)':ObjC.unwrap(d.stringValue) }
 OSA
 }
 # Exit codes: 0 ok, 1 NO_PID / ERR, 2 not macOS, 3 wrong origin, 64 bad input.
@@ -121,6 +133,27 @@ print(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
   "codeSha256": os.environ.get("NC_CALLER_CODE_SHA256") or hashlib.sha256(code).hexdigest(),
   "codeBytes": int(os.environ.get("NC_CALLER_CODE_BYTES") or len(code))}))' >> "$LOG"; } 2>/dev/null \
   || echo "warning: could not write the audit line to $LOG" >&2
+# The screen's state, in plain words, from GET /machine-maintenance/lock-state (empty when unreadable).
+# "unknown" stays unknown: with the lock flag set it is reported as "locked or asleep, not confirmed".
+lock_note() {
+  local cfg="$AGENT_HOME/.instar/config.json" port auth body
+  port="$(/usr/bin/python3 -I -c 'import json,sys; print(int(json.load(open(sys.argv[1])).get("port",4040)))' "$cfg" 2>/dev/null)" || return 0
+  auth="${INSTAR_AUTH_TOKEN:-}"
+  # Bounded: a waiting secret store must not stall the error return (3s; the curl below has its own 5s limit).
+  [ -z "$auth" ] && [ -x "$AGENT_HOME/.instar/bin/node" ] && auth="$(/usr/bin/perl -e 'alarm 3; exec @ARGV' "$AGENT_HOME/.instar/bin/node" "$AGENT_HOME/.instar/scripts/secret-get.mjs" authToken 2>/dev/null)"
+  [ -z "$auth" ] && return 0
+  # The header goes in on stdin (-K -), never in curl's argv, so the token is not in the process list.
+  body="$(printf 'header = "Authorization: Bearer %s"\n' "$auth" | curl -s -m 5 -K - "http://127.0.0.1:$port/machine-maintenance/lock-state" 2>/dev/null)" || return 0
+  printf '%s' "$body" | /usr/bin/python3 -I -c '
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+s, i = d.get("lockState"), d.get("inputs") or {}
+if s == "locked": print("; console locked: Chrome does not answer while the screen is locked", end="")
+elif s == "screensaver-or-display-sleep": print("; display asleep or screensaver on: Chrome may not answer until the screen wakes", end="")
+elif s == "unknown" and i.get("flagLocked"): print("; console locked or display asleep (lock flag set, not confirmed): Chrome may not answer until the screen is awake and unlocked", end="")
+' 2>/dev/null
+}
 OUT="$(send "$WRAPPED")"
 # Keep the browser ledger current: this browser is in use (renews its lease). Never fails the call.
 "$(dirname "$0")/chrome-ledger.sh" touch "$P" 2>/dev/null
@@ -129,5 +162,11 @@ case "$OUT" in
   "${NONCE}err:"*) echo "ERR page-js-error: ${OUT#"${NONCE}err:"}"; exit 1 ;;
   "${NONCE}wrong-origin:"*) echo "ERR wrong-origin: active tab is on ${OUT#"${NONCE}wrong-origin:"}, expected $3"; exit 3 ;;
   "(nil)") echo "ERR no-result (Apple Events JavaScript is off in this profile: quit it and relaunch with chrome-launch.sh)"; exit 1 ;;
+  "ERR apple-event-failed"*)
+    # Chrome stops answering Apple Events while the console is locked or the display asleep
+    # (2026-11-26, Studio and Mini: -1712 even for the app name). Say so when the agent's own
+    # lock reading shows it, so an automatic repair does not fail with an unexplained error.
+    # Best effort and bounded: no reading, no extra words.
+    echo "$OUT$(lock_note)"; exit 1 ;;
   *) echo "$OUT"; exit 1 ;;
 esac

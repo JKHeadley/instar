@@ -1,0 +1,49 @@
+{
+  "ts": "2026-11-27T00:00:50.271Z",
+  "slug": "relogin-authenticator-over-phone-prompt",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 436,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginHelper.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/SubscriptionReloginStore.ts",
+      "src/core/types.ts",
+      "src/data/awareness/relogin-authenticator-over-phone.md",
+      "src/data/builtinSkillContent.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 426,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "novel",
+    "closure": "gap",
+    "gapItem": "ACT-001",
+    "novelClass": {
+      "nearestExistingClass": "brittle-keyword-authority",
+      "includes": [
+        "a sign-in helper prompt that treats every phone prompt as a provider risk check"
+      ],
+      "excludes": [
+        "a stop rule that is broad on purpose because the safe and unsafe cases cannot be told apart"
+      ],
+      "severity": "normal"
+    }
+  },
+  "verdict": "blocked"
+}

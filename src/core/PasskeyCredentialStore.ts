@@ -214,6 +214,46 @@ export class PasskeyCredentialStore {
     return { ok: true, record: { ...rec } };
   }
 
+  /**
+   * The custody of (email, this machine) for admission decisions (spec §3.4), WITHOUT returning
+   * key material: the same rules as `load()`, reduced to a name. `absent` covers a missing entry,
+   * a machine-scope refusal and a changed machine id — none of them can sign in here.
+   */
+  custodyOf(email: string): CustodyState | 'absent' {
+    const result = this.load(email);
+    if (result.ok) return result.record.provenance === 'legacy-adopted' ? 'legacy-adopted' : 'present';
+    return result.reason === 'quarantined' ? 'quarantined' : 'absent';
+  }
+
+  /**
+   * Whether this store holds ANYTHING for the email: an entry under any machine id (including an
+   * old id after identity recovery), or a pending mint. Adoption refuses when this is true, so a
+   * failed adoption can never revert away a credential or an in-flight enrollment (§6.2).
+   */
+  holdsAnythingFor(email: string): boolean {
+    const c = this.readContents();
+    const ek = this.emailKeyWith(c.hmacKey, email);
+    return Object.keys(c.entries).some((k) => k.startsWith(`${ek}:`)) || fs.existsSync(this.pendingPath(ek));
+  }
+
+  /**
+   * Undo a failed legacy adoption: remove ONLY this machine's quarantined `legacy-adopted` entry for
+   * the email. Never another machine id's entry, never a pending mint, never a released or minted
+   * record, and no tombstone (nothing was ever usable). Returns whether an entry was removed.
+   */
+  async discardQuarantinedAdoption(email: string): Promise<boolean> {
+    let removed = false;
+    await this.mutate((c) => {
+      const key = this.entryKey(c.hmacKey, email, this.machineId);
+      const rec = c.entries[key];
+      if (!rec || !rec.quarantined || rec.provenance !== 'legacy-adopted') return;
+      delete c.entries[key];
+      delete c.adoptions[key];
+      removed = true;
+    });
+    return removed;
+  }
+
   // ── Writes (all locked, verified by read-back) ───────────────────────
 
   /**

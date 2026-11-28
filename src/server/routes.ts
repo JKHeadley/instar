@@ -379,6 +379,7 @@ import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.
 import { buildRoutingSpendSummary, buildRoutingSpendCaps, DEFAULT_METERED_CAPS, type SpendGrain } from '../core/routingSpendView.js';
 import { isValidTimeZone } from '../core/RoutingSpendCapsStore.js';
 import { SecretStore } from '../core/SecretStore.js';
+import { adoptLegacyPasskey, deleteLegacyPasskey, listLegacyPasskeyNames } from '../core/PasskeyLegacyAdoption.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import {
   PlaywrightProfileRegistry,
@@ -1501,6 +1502,8 @@ export interface RouteContext {
     retry?: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
     /** The agent-session helper's code route (spec skill-driven-signin-repair). Absent ⇒ 503. */
     helperSubmit?: (episodeId: string, token: string, body: unknown) => { status: number; body: Record<string, unknown> };
+    /** True while any sign-in helper drive is in flight on this machine (spec relogin-authenticator-over-phone-prompt). */
+    helperDriving?: () => boolean;
     /** The last-resort model's live state (spec relogin-last-resort-model); never a key. */
     lastResortStatus?: () => import('../core/ReloginLastResortProvider.js').ReloginLastResortStatus | { available: false };
     /** Why each needs-sign-in account on this machine has no repair (read-only). */
@@ -36528,6 +36531,101 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // ── Legacy (prototype) passkey adoption (spec §6.2) ───────────────────────────────────────────
+  // GET /passkeys/legacy — names only: the prototype `google_passkey_*` keys held in THIS machine's
+  // shared vault. Never a value, never an email.
+  router.get('/passkeys/legacy', (_req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    try {
+      const vault = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read() as Record<string, unknown>;
+      res.json({ machineId: passkeySelfMachineId(), keys: listLegacyPasskeyNames(vault) });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'vault unreadable' });
+    }
+  });
+  // POST /passkeys/adopt-legacy — PIN. Body { pin, name, email, mintedByAgent? }. The operator's
+  // per-key, per-machine ADOPT choice: copy in quarantined, cold-prove here, commit only on `ready`
+  // (otherwise revert), then remove the shared copy. Needs an active grant for (email, this machine).
+  router.post('/passkeys/adopt-legacy', async (req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    if (!checkPasskeyPin(req, res)) return;
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const canonical = canonicalPasskeyEmail(typeof req.body?.email === 'string' ? req.body.email : '');
+    if (!name || !canonical) { res.status(400).json({ error: 'name and email are required' }); return; }
+    const mintedByAgent = typeof req.body?.mintedByAgent === 'string' && req.body.mintedByAgent.trim() ? req.body.mintedByAgent.trim().slice(0, 64) : undefined;
+    try {
+      const auth = buildPasskeyAuthority();
+      if (!ctx.passkeyProofBrowser) { res.status(503).json({ error: 'proof-browser-unavailable' }); return; }
+      if (!auth.grants.has(canonical)) { res.status(404).json({ error: 'no active grant for that account on this machine' }); return; }
+      const stateDir = ctx.config.stateDir;
+      const { snapshot, ageMs } = await buildPasskeyPoolReader(auth).read();
+      const nowMs = Date.now();
+      const rows = passkeyLiveRows(auth, snapshot);
+      const cfg = passkeyRateLimitConfig();
+      const pool = poolAdmission('prove', { peers: snapshot.peers.map((p) => p.condition), suspension: { state: 'none', killSwitch: false }, leaseHolder: { isSelf: true, reachable: true, lastKnownAgeMs: null } });
+      const gap = sameAccountGap({ rows: rows.attempts, canonicalEmail: canonical, machineId: auth.selfMachineId, nowMs, gapHours: cfg.sameAccountGapHours });
+      const pause = activePauseFor({ pauses: rows.pauses, canonicalEmail: canonical, machineId: auth.selfMachineId, nowMs });
+      if (!pool.allowed || !gap.allowed || pause) {
+        res.status(409).json({ error: 'proof-refused', reason: !pool.allowed ? pool.reason : !gap.allowed ? 'same-account-gap' : `paused:${pause!.reason}`, memoAgeMs: ageMs });
+        return;
+      }
+      const vault = new SecretStore({ stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+      const store = new PasskeyCredentialStore({ stateDir, machineId: auth.selfMachineId, forceFileKey: ctx.config.secrets?.forceFileKey });
+      const holderId = `passkey-adopt:${auth.selfMachineId}`;
+      const seat = (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).acquire(holderId, 'passkey legacy adoption proof');
+      if (!seat.acquired) { res.status(409).json({ error: 'seat-busy', holderLabel: seat.holderLabel, retryAfterMs: seat.retryAfterMs }); return; }
+      const ledger = new PasskeyAttemptLedger({ stateDir, machineId: auth.selfMachineId });
+      let proofDetail: { riskPage: boolean; throttled: boolean } = { riskPage: false, throttled: false };
+      let outcome;
+      try {
+        outcome = await adoptLegacyPasskey({
+          readLegacy: (n) => vault.get(n), removeLegacy: (n) => vault.delete(n), store, machineId: auth.selfMachineId,
+          agentName: ctx.config.projectName ?? 'agent',
+          coldProof: async ({ canonicalEmail, material }) => {
+            ledger.recordAttempt({ canonicalEmail, kind: 'proof' });
+            const profileDir = path.join(stateDir, PASSKEY_DIR, 'profiles', `${store.emailKey(canonicalEmail)}-proof`);
+            fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+            const urls = ctx.passkeyProofUrls ?? PASSKEY_PROOF_DEFAULT_URLS;
+            const r = await runPasskeyColdProof({ openBrowser: () => ctx.passkeyProofBrowser!(profileDir), log: (line) => console.log(line) },
+              { canonicalEmail, record: material, signInUrl: urls.signIn, signOutUrl: urls.signOut });
+            proofDetail = { riskPage: r.riskPage, throttled: r.throttled };
+            return { outcome: r.outcome, reason: r.reason };
+          },
+        }, { name, email: canonical, mintedByAgent });
+      } finally {
+        (ctx.playwrightSeatLease?.() ?? new PlaywrightSeatLease()).release(holderId);
+      }
+      if (proofDetail.riskPage) ledger.pause({ canonicalEmail: canonical, scope: 'account', reason: 'risk', durationMs: 7 * 24 * 60 * 60_000 });
+      if (proofDetail.throttled) {
+        ledger.pause({ canonicalEmail: canonical, scope: 'account', reason: 'throttled', durationMs: 24 * 60 * 60_000 });
+        ledger.pause({ canonicalEmail: null, scope: 'machine', reason: 'throttled', durationMs: 60 * 60_000 });
+      }
+      // A committed adoption is the cell's first `ready` proof on this machine.
+      if (outcome.adopted) buildPasskeyHealth(auth).recordOutcome({ canonicalEmail: canonical, outcome: 'ready', origin: 'operator' });
+      featureEvidence.record('passkeys', { kind: outcome.adopted ? 'fired' : 'held', reason: outcome.adopted ? 'legacy-adopted' : `legacy-adopt-refused: ${outcome.reason}`, context: { adopted: outcome.adopted } });
+      appendPlaywrightAudit('passkey-adopt-legacy', 'passkeys', { name, adopted: outcome.adopted, reason: outcome.adopted ? null : outcome.reason, crossAgent: outcome.adopted ? outcome.crossAgent : null, dryRun: false });
+      res.status(outcome.adopted ? 200 : 409).json(outcome);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'adoption failed' });
+    }
+  });
+  // POST /passkeys/delete-legacy — PIN. Body { pin, name }. The DELETE choice: removes THIS machine's
+  // shared copy. Google still lists the passkey; removing it there stays with the operator.
+  router.post('/passkeys/delete-legacy', async (req, res) => {
+    if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
+    if (!checkPasskeyPin(req, res)) return;
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name) { res.status(400).json({ error: 'name is required' }); return; }
+    try {
+      const vault = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+      const r = await deleteLegacyPasskey({ readLegacy: (n) => vault.get(n), removeLegacy: (n) => vault.delete(n) }, name);
+      appendPlaywrightAudit('passkey-delete-legacy', 'passkeys', { name, deleted: r.deleted, dryRun: false });
+      res.status(r.deleted ? 200 : 404).json(r);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'delete failed' });
+    }
+  });
+
   // POST /passkeys/cell-action — the mandate RECEIVER. Bearer-authenticated transport; the SIGNATURE,
   // the expected-issuer set and the nonce ledger are the authority. Refuses account-follow-me bundles.
   router.post('/passkeys/cell-action', async (req, res) => {
@@ -42928,6 +43026,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.json({ enabled: true, episodes: localEpisodes,
           ...(localBlockers ? { blockers: localBlockers } : {}),
           ...(ownConfig ? { config: ownConfig } : {}),
+          authenticatorSupervision: ctx.subscriptionRelogin!.store.authenticatorSupervision(),
           lastResort: ctx.subscriptionRelogin!.lastResortStatus?.() ?? { available: false } });
         return;
       }
@@ -43269,6 +43368,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: true, cancelled: episode.state === 'cancelled', episode });
     } catch (error) {
       const message = error instanceof Error ? error.message : 're-login cancellation failed';
+      res.status(message === 'relogin-episode-not-found' ? 404 : 409).json({ error: message });
+    }
+  });
+
+  // Supervised first uses of the authenticator step (spec relogin-authenticator-over-phone-prompt):
+  // the reviewer records pass, inconclusive or fail for one use. Bearer auth; the store refuses a
+  // pass or inconclusive for an episode with no recorded use or a running repair, and a second review
+  // of the same use; a fail is accepted at any time.
+  router.post('/subscription-relogin/:episodeId/authenticator-review', (req, res) => {
+    if (!ctx.subscriptionRelogin) {
+      res.status(503).json({ enabled: false, error: 'subscription re-login is not configured' });
+      return;
+    }
+    const result = req.body?.result;
+    if (result !== 'pass' && result !== 'fail' && result !== 'inconclusive') {
+      res.status(400).json({ error: 'result must be "pass", "fail" or "inconclusive"' });
+      return;
+    }
+    // A helper holds the agent's token: no pass or inconclusive is recorded while any helper drive is
+    // live here. A fail can only close the step, so it is always accepted (the live off switch).
+    if (result !== 'fail' && ctx.subscriptionRelogin.helperDriving?.()) {
+      res.status(409).json({ error: 'authenticator-review-helper-live' });
+      return;
+    }
+    try {
+      const episode = ctx.subscriptionRelogin.store.recordAuthenticatorReview(req.params.episodeId, result);
+      res.json({ enabled: true, recorded: result, episode, supervision: ctx.subscriptionRelogin.store.authenticatorSupervision() });
+    } catch (error) {
+      // @silent-fallback-ok — the route returns the typed conflict; it does not fall back.
+      const message = error instanceof Error ? error.message : 'authenticator review failed';
       res.status(message === 'relogin-episode-not-found' ? 404 : 409).json({ error: message });
     }
   });

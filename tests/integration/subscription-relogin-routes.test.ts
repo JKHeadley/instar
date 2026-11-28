@@ -139,6 +139,27 @@ describe('/subscription-relogin routes', () => {
     expect(JSON.stringify({ list: list.body, events: events.body })).not.toMatch(/password|cookie|verificationUrl|userCode/i);
   });
 
+  it('records authenticator reviews only for a finished, granted repair and shows the supervision latch (spec relogin-authenticator-over-phone-prompt)', async () => {
+    const post = (id: string, body: unknown) => api(`/subscription-relogin/${id}/authenticator-review`, { method: 'POST', body: JSON.stringify(body) });
+    expect((await post(episodeId, { result: 'maybe' })).status).toBe(400);
+    expect((await post(episodeId, {})).status).toBe(400);
+    expect((await post('repair-missing', { result: 'pass' })).status).toBe(404);
+    expect(await post(episodeId, { result: 'pass' })).toMatchObject({ status: 409, body: { error: 'authenticator-review-not-applicable' } });
+    const current = store.get(episodeId)!;
+    store.approve(episodeId, { inputDigest: current.inputDigest }); // a running repair cannot be passed
+    store.recordAuthenticatorUse(episodeId, 'drive-route-1');
+    expect(await post(episodeId, { result: 'pass' })).toMatchObject({ status: 409, body: { error: 'authenticator-review-drive-live' } });
+    let list = await api('/subscription-relogin');
+    expect(list.body.authenticatorSupervision).toMatchObject({ state: 'awaiting-review', grants: 1, passes: 0 });
+    store.cancel(episodeId);
+    const passed = await post(episodeId, { result: 'pass' });
+    expect(passed).toMatchObject({ status: 200, body: { recorded: 'pass', supervision: { state: 'open', passes: 1 } } });
+    expect(await post(episodeId, { result: 'pass' })).toMatchObject({ status: 409, body: { error: 'authenticator-review-already-recorded' } });
+    expect(await post(episodeId, { result: 'fail' })).toMatchObject({ status: 200, body: { recorded: 'fail', supervision: { state: 'review-failed' } } });
+    list = await api('/subscription-relogin');
+    expect(list.body.authenticatorSupervision).toMatchObject({ state: 'review-failed', fails: 1 });
+  });
+
   it('serves a machine-tagged pool view and drives one-click repair through an exact mandate', async () => {
     const list = await api('/subscription-relogin?scope=pool');
     expect(list).toMatchObject({

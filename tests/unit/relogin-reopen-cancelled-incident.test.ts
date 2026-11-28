@@ -154,6 +154,18 @@ describe('a repair cancelled because its incident closed is re-admitted when tha
     s.close();
   });
 
+  it('still re-admits when an audit row (from = to) lands after the source-closed cancel', () => {
+    const s = store();
+    const ep = s.suggest(input);
+    const approved = s.approve(ep.id, { inputDigest: ep.inputDigest });
+    s.transition(approved.id, { expectedVersion: approved.version, to: 'cancelled', eventClass: 'source-incident-closed',
+      failureClass: 'cancelled-by-operator' });
+    s.recordAuthenticatorReview(ep.id, 'fail'); // accepted on a terminal row, written from = to
+    expect(s.listEvents(ep.id)[0].eventClass).toBe('authenticator-review-fail');
+    expect(s.suggest(input)).toMatchObject({ id: ep.id, state: 'suggested' });
+    s.close();
+  });
+
   it('keeps an operator-cancelled row cancelled when the inputs are unchanged', () => {
     const s = store();
     const ep = s.suggest(input);

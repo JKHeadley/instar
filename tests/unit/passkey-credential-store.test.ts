@@ -91,6 +91,19 @@ describe('PasskeyCredentialStore', () => {
     it('absent is absent', () => {
       expect(mk().load('nobody@example.com')).toEqual({ ok: false, reason: 'absent' });
     });
+
+    it('custodyOf names the custody by the same rules as load, without key material', async () => {
+      expect(mk().custodyOf(EMAIL)).toBe('absent');
+      await mk().put(rec({ quarantined: true }));
+      expect(mk().custodyOf(EMAIL)).toBe('quarantined');
+      await mk().release(EMAIL);
+      expect(mk().custodyOf(EMAIL)).toBe('present');
+      await mk().put(rec({ mintedOnMachineId: 'm_other', provenance: 'legacy-adopted' }));
+      expect(mk().custodyOf(EMAIL)).toBe('absent'); // not adopted on this machine yet
+      await mk().commitAdoption(EMAIL);
+      expect(mk().custodyOf(EMAIL)).toBe('legacy-adopted');
+      expect(mk('m_new_id').custodyOf(EMAIL)).toBe('absent');
+    });
   });
 
   it('remove deletes the entry, the pending record and adoption, and leaves a tombstone', async () => {
