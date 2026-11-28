@@ -1,0 +1,19 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The feedback consumer now claims queued work by importance. High-priority items come first, then the most-reported, then the oldest; before, it was oldest first. The consumer-promotion preview uses the same order, so the batch an operator approves is exactly the batch that gets worked. Leases, exclusivity, retries and the promotion hash rules are unchanged.
+
+## What to Tell Your User
+
+When I fix problems reported by other agents, I now start with the most important ones, the issues reported most often and marked high priority, instead of whatever came in first. The batch you approve shows them in that same order.
+
+## Summary of New Capabilities
+
+Priority-first ordering for feedback work, and for the batch shown for approval.
+
+## Evidence
+
+tests/unit/feedback-drain-store.test.ts: high priority is claimed before older normal work, more reports before fewer, the promotion preview matches the claim order exactly, and priority comparison is case-insensitive. The feedback drain and promotion unit files, the backup-restore integration test and all 26 ratchet files pass; tsc is clean.

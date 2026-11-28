@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "feedback-claim-priority-order",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T19:21:25.156Z",
+  "artifactPath": "upgrades/side-effects/feedback-claim-priority-order.md",
+  "artifactSha256": "0d0194b2f1ede897d73b6e9b0ebc3a8bba4b5307f35021c4ae4e7ebdc9688db0",
+  "coveredFiles": [
+    "src/feedback-factory/drain/FeedbackDrainStore.ts",
+    "tests/unit/feedback-drain-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One shared ORDER BY constant for claiming and its preview: priority, then report count, then age; no other behaviour change.",
+  "eli16Path": "docs/eli16/feedback-claim-priority-order.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-claim-priority-order.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -277,6 +277,15 @@ function sameExceptLwwFields(priorRaw: string, nextRaw: string): boolean {
 }
 const canonical = (value: unknown): string => JSON.stringify(value, Object.keys(value as object).sort());
 
+/**
+ * The order the consumer claims queued work in, shared by claimNext and claimableWork (the promotion
+ * proposal's read-only preview) so the batch an operator approves is exactly what gets claimed.
+ * Highest priority first, then the most-reported, then the oldest. It used to be oldest-first only, so
+ * a Promote batch was the 10 oldest single-report items while high-priority fleet reports with
+ * hundreds of reports waited behind them (2026-11-27). Priority is 'high' (5+ reports) or 'normal'.
+ */
+export const WORK_CLAIM_ORDER = "CASE lower(priority) WHEN 'high' THEN 0 ELSE 1 END, report_count DESC, first_seen_at, created_at, work_id";
+
 export class FeedbackDrainStore {
   private readonly db: BetterSqliteDatabase;
   private readonly hmacKey: string | Buffer;
@@ -687,8 +696,8 @@ export class FeedbackDrainStore {
       const only = input.onlyWorkIds ? [...new Set(input.onlyWorkIds)].slice(0, 50) : null;
       if (only && only.length === 0) return null;
       const row = (only
-        ? this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) AND work_id IN (${only.map(() => '?').join(',')}) ORDER BY first_seen_at,created_at,work_id LIMIT 1`).get(now, ...only)
-        : this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY first_seen_at,created_at,work_id LIMIT 1`).get(now)) as { work_id: string } | undefined;
+        ? this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) AND work_id IN (${only.map(() => '?').join(',')}) ORDER BY ${WORK_CLAIM_ORDER} LIMIT 1`).get(now, ...only)
+        : this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY ${WORK_CLAIM_ORDER} LIMIT 1`).get(now)) as { work_id: string } | undefined;
       if (!row) return null;
       const token = this.tokenFactory();
       const tokenHash = this.hashToken(token);
@@ -727,7 +736,7 @@ export class FeedbackDrainStore {
   /** Work the consumer would claim next, in claimNext's exact order (read-only; for the promotion proposal). */
   claimableWork(limit: number, now = this.now()): FeedbackWork[] {
     const bounded = Math.max(0, Math.min(50, Math.trunc(limit)));
-    const rows = this.db.prepare(`SELECT * FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY first_seen_at,created_at,work_id LIMIT ?`)
+    const rows = this.db.prepare(`SELECT * FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY ${WORK_CLAIM_ORDER} LIMIT ?`)
       .all(now, bounded) as Record<string, unknown>[];
     return rows.map((row) => this.workFromRow(row));
   }
