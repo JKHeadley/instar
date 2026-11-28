@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-28T06:53:15.881Z",
+  "slug": "pre-push-smoke-bounded-discovery",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 82,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lib/pre-push-scope.mjs",
+      "scripts/pre-push-smoke.mjs"
+    ],
+    "addedLines": 54,
+    "deletedLines": 28
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

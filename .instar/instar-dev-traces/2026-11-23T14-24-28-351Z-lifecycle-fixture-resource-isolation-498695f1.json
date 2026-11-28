@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "lifecycle-fixture-resource-isolation",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T14:24:28.351Z",
+  "artifactPath": "upgrades/side-effects/lifecycle-fixture-resource-isolation.md",
+  "artifactSha256": "41943c94ccd07474d26be3490c80491fdf9f1003e618652b38059efc5adf4296",
+  "coveredFiles": [
+    "docs/specs/lifecycle-fixture-resource-isolation.eli16.md",
+    "tests/e2e/compaction-telegram-context.test.ts",
+    "tests/e2e/documents-alive.test.ts",
+    "tests/e2e/silently-stopped-sentinel-lifecycle.test.ts",
+    "tests/e2e/telegram-origin-causal-retire-alive.test.ts",
+    "upgrades/next/lifecycle-fixture-resource-isolation.md",
+    "upgrades/side-effects/lifecycle-fixture-resource-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible test-only resource ownership corrections; production algorithms and policy unchanged.",
+  "eli16Path": "docs/specs/lifecycle-fixture-resource-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lifecycle-fixture-resource-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

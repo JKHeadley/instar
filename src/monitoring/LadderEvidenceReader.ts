@@ -114,6 +114,10 @@ async function readOneFile(p: string, tallies: Tally[]): Promise<void> {
         const isWhere = matches(row, t.q.ref.where);
         const isOf = matches(row, t.q.ref.of);
         if (t.seen && t.q.ref.dedupe) {
+          // Only a row inside this metric's scope may take the id's last-row slot:
+          // a row from another feature, kind or grader sharing the id must never
+          // overwrite (and so erase) a matching row.
+          if (!isWhere && !isOf) continue;
           const key = row[t.q.ref.dedupe];
           if (typeof key === 'string' || typeof key === 'number') t.seen.set(String(key), { where: isWhere, of: isOf });
           if (isWhere && (t.newest === null || when > t.newest)) t.newest = when;

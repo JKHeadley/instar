@@ -42,9 +42,13 @@ async function boot(extra: Record<string, unknown>, opts: { viewer?: PrivateView
     ...extra,
   } as unknown as InstarConfig;
   const server = new AgentServer({ config, sessionManager: { listRunningSessions: () => [], getSession: () => null } as never, state: new StateManager(stateDir), ...(opts.viewer ? { viewer: opts.viewer } : {}), ...(opts.telegram ? { telegram: opts.telegram as never } : {}) });
-  await server.start();
   servers.push(server);
-  return { app: server.getApp(), stateDir };
+  await server.start();
+  const address = (server as unknown as { server: import('node:http').Server }).server.address();
+  if (!address || typeof address === 'string') throw new Error('document fixture has no TCP listener');
+  // The test-only origin callback reads this same fixture config on request.
+  config.port = address.port;
+  return { app: server.getApp(), stateDir, origin: `http://127.0.0.1:${address.port}` };
 }
 
 afterAll(async () => {
@@ -104,10 +108,10 @@ describe('Instar Documents — feature is alive', () => {
   });
 
   it('with the test-only loopback switch and no tunnel, a create links to the agent\'s own loopback address', async () => {
-    const { app } = await boot({ developmentAgent: true, port: 4987, documents: { loopbackOrigin: true } });
-    const r = await request(app).post('/docs').set(auth()).send({ title: 'x', markdown: 'y', primary: 'telegram:7' });
+    const { origin } = await boot({ developmentAgent: true, documents: { loopbackOrigin: true } });
+    const r = await request(origin).post('/docs').set(auth()).send({ title: 'x', markdown: 'y', primary: 'telegram:7' });
     expect(r.status).toBe(201);
-    expect(JSON.stringify(r.body)).toContain('http://127.0.0.1:4987/docs/');
+    expect(r.body.url).toBe(`${origin}/docs/${r.body.id}`);
   });
 
   it('the old-link guarantee (§3.9b): with documents serving, POST /view refuses a new page and old pages stay served', async () => {
