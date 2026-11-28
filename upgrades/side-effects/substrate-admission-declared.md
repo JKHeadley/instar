@@ -65,3 +65,7 @@ Closes both halves of the obligation honestly: the pass over the members, and a 
 - Its advisory points are also fixed: level-1 headings end the section, indented and tab-separated headings count, fenced blocks are ignored, and "test 10" no longer counts as test 1. 10 of 10 tests pass.
 - Remaining and stated: a fence opened with ``` and closed with ~~~ counts as closed, and an unclosed fence hides what follows, as it does when rendered.
 Review record: `.instar/state/handoffs/reviews/substrate-admission-review.md` (agent-local).
+
+## Release note fix (2026-11-27, about 20:35 PT)
+
+CI assembles the release notes from main plus this branch. Main's upgrades/next/ was empty after a release, so this fragment was checked alone, and it failed the repository invariant "missing ## Summary of New Capabilities section" (seen on #4038). Fix: internal-only marker added: the change is a lint, a baseline and an audit document, and stages nothing under src/, so the assembler fills the two user-facing sections. Checked alone with the repository's own assembleNextMd and validateGuideContent: the old version fails and the new one passes.

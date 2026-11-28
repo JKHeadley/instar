@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "substrate-admission-declared",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T06:21:54.493Z",
+  "artifactPath": "upgrades/side-effects/substrate-admission-declared.md",
+  "artifactSha256": "7ab303c6f805e1ce9a4b6e0a88a6a123de8b0c5822a254280b1c99839972c841",
+  "coveredFiles": [
+    "docs/audits/substrate-membership-sweep-2026-11-27.md",
+    "docs/specs/substrate-admission-declared.eli16.md",
+    "docs/substrate-admission-baseline.json",
+    "package.json",
+    "scripts/lint-substrate-admission-declared.mjs",
+    "tests/unit/lint-substrate-admission-declared.test.ts",
+    "upgrades/next/substrate-admission-declared.md",
+    "upgrades/side-effects/substrate-admission-declared.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release-note fix on this branch (reader concurred on the delta, review file echo-pipeline-strategy-release-note-fix-1127.md); a revert undoes it; covers every file this branch changes",
+  "eli16Path": "docs/specs/substrate-admission-declared.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/substrate-admission-declared.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
