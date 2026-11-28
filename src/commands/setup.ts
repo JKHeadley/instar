@@ -2348,7 +2348,7 @@ export async function runNonInteractiveSetup(opts: NonInteractiveOptions): Promi
   if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
 
   // Write config
-  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(config, null, 2));
+  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(config, null, 2), { mode: 0o600 });
 
   // Write AGENT.md
   fs.writeFileSync(path.join(stateDir, 'AGENT.md'), `# Agent Identity

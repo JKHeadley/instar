@@ -173,7 +173,8 @@ export class LiveConfig extends EventEmitter {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const tmpPath = `${this.configPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
       try {
-        fs.writeFileSync(tmpPath, JSON.stringify(current, null, 2) + '\n');
+        // config.json carries credentials: the replacement file is owner-only.
+        fs.writeFileSync(tmpPath, JSON.stringify(current, null, 2) + '\n', { mode: 0o600 });
         fs.renameSync(tmpPath, this.configPath);
       } finally {
         if(fs.existsSync(tmpPath))SafeFsExecutor.safeUnlinkSync(tmpPath,{operation:'live-config:publication-scratch'});
@@ -275,6 +276,11 @@ export class LiveConfig extends EventEmitter {
       const newConfig = JSON.parse(content) as Record<string, unknown>;
 
       const stat = fs.statSync(this.configPath);
+      // config.json carries credentials: repair a file that group or others
+      // can read (an older install, a hand edit, a copy) to owner-only.
+      if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
+        try { fs.chmodSync(this.configPath, 0o600); } catch { /* @silent-fallback-ok: a read-only mount keeps its mode; the read still succeeds */ }
+      }
       this.lastMtime = stat.mtimeMs;
       this.lastReadAt = Date.now();
 
