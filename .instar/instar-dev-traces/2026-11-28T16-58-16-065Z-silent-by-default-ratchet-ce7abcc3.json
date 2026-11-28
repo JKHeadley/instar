@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "silent-by-default-ratchet",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-28T16:58:16.065Z",
+  "artifactPath": "upgrades/side-effects/silent-by-default-ratchet.md",
+  "artifactSha256": "d6f2f4fa50a1dc90e06d0353e855bcd2e073147828f0eeb64b8f2ac6215576b4",
+  "coveredFiles": [
+    "docs/notification-default-posture-baseline.json",
+    "docs/specs/silent-by-default-ratchet.eli16.md",
+    "src/messaging/notificationCategories.ts",
+    "src/messaging/notificationStampers.ts",
+    "tests/unit/notification-silent-by-default-ratchet.test.ts",
+    "upgrades/next/silent-by-default-ratchet.md",
+    "upgrades/side-effects/silent-by-default-ratchet.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A unit-test ratchet and a reviewed baseline over notification default posture; two export keywords and one map lifted to an export; no behaviour change.",
+  "eli16Path": "docs/specs/silent-by-default-ratchet.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/silent-by-default-ratchet.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

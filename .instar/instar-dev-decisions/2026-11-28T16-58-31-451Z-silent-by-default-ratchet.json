@@ -1,0 +1,77 @@
+{
+  "ts": "2026-11-28T16:58:31.451Z",
+  "slug": "silent-by-default-ratchet",
+  "headCommit": "3c1501ac1a064d142bac502802d3c0fcec0c88ba",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 27,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/notificationCategories.ts",
+      "src/messaging/notificationStampers.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "judgment": {
+    "version": 1,
+    "tierReasoning": "A unit-test ratchet and a reviewed baseline over notification default posture; two export keywords and one map lifted to an export; no behaviour change.",
+    "trace": {
+      "path": ".instar/instar-dev-traces/2026-11-28T16-58-16-065Z-silent-by-default-ratchet-ce7abcc3.json",
+      "hash": "7d0ec818c5ef59b230fc3b43a9c94fc887b7c04e",
+      "staged": true
+    },
+    "traceDiffers": false,
+    "artifact": {
+      "path": "upgrades/side-effects/silent-by-default-ratchet.md",
+      "hash": "3efc7e8a3cdb38c71bba2de6ba7d28e1426513ec",
+      "stagedHash": "3efc7e8a3cdb38c71bba2de6ba7d28e1426513ec"
+    },
+    "spec": null,
+    "template": "a33b7e354c2b936bb350305efddc4de1f6e1d658",
+    "headings": {
+      "1. Over-block": "missing",
+      "2. Under-block": "missing",
+      "3. Level-of-abstraction fit": "missing",
+      "4. Signal vs authority compliance": "missing",
+      "4b. Judgment-point check": "missing",
+      "5. Interactions": "missing",
+      "6. External surfaces": "missing",
+      "7. Multi-machine posture": "missing",
+      "8. Rollback cost": "missing",
+      "6b. Operator-surface quality": {
+        "present": true,
+        "chars": 27
+      },
+      "Second-pass review": {
+        "present": true,
+        "chars": 826
+      }
+    },
+    "secondPassStatus": "required-concurred",
+    "perFileLines": [
+      {
+        "path": "src/messaging/notificationCategories.ts",
+        "added": 12,
+        "deleted": 11,
+        "baseBlob": "ff8599ce15d292f1e7bb9a6413398f4e247197e9",
+        "stagedBlob": "b09110e19c30173fec8631efcd7da47592f664ff"
+      },
+      {
+        "path": "src/messaging/notificationStampers.ts",
+        "added": 2,
+        "deleted": 2,
+        "baseBlob": "5ec4df5b4cffc267d1965088b7c13f759b824c7e",
+        "stagedBlob": "929ccca319875799c0302b7a56ec610547585c25"
+      }
+    ]
+  }
+}
