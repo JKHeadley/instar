@@ -3496,6 +3496,10 @@ export function createRoutes(ctx: RouteContext): Router {
     ownerCardCandidate: ownerNeedsCandidate,
     withdrawalJournalFor: ctx.ownerNeedsWithdrawalJournalFor,
     canary: ownerNeedsCandidate ? undefined : needsCanary,
+    appBuildFor: (id) => {
+      const pairing = ctx.mobilePairingService?.devices.get(id);
+      return pairing?.status === 'active' ? pairing.appBuild : undefined;
+    },
     read: (p) => needsSelfRead(p),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req) : { status: 503, body: { error: 'work-board-starting' } }),
@@ -34298,7 +34302,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (status === 'completed' && currentAction && ctx.classReviewStore) {
       const refTag = currentAction.tags?.find((tag) => tag.startsWith('class-review:'));
-      if (refTag) ctx.classReviewStore.transitionOutcome(refTag.slice('class-review:'.length), 'process', 'shipped');
+      // Marks the arm shipped but never grades the review: an action is usually
+      // completed by the agent's own session on this unpinned route, so it is not
+      // an independent decision (graded evidence comes only from the PIN route).
+      if (refTag) ctx.classReviewStore.transitionOutcome(refTag.slice('class-review:'.length), 'process', 'shipped', null);
     }
     res.json({ ok: true, id: req.params.id, status });
   });
@@ -37097,7 +37104,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       record = ctx.classReviewStore.defer(req.params.dedupeKey, arm, tracking.id);
     } else {
-      record = ctx.classReviewStore.transitionOutcome(req.params.dedupeKey, arm, outcome);
+      // The PIN was checked above: this is the operator's decision, the only grade source.
+      record = ctx.classReviewStore.transitionOutcome(req.params.dedupeKey, arm, outcome, 'operator-outcome');
     }
     if (!record) { res.status(404).json({ error: 'not found' }); return; }
     res.json(record);

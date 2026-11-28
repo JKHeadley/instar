@@ -1,0 +1,9 @@
+# Correction class review writes graded evidence (ELI16)
+
+When the operator corrects an agent, a built-in reviewer reads the correction and asks two questions: does one of Instar's standards already cover this, or does a standard need changing, and is there a gap in how the work is done? If it finds a gap, it files a proposal: a draft change to a standard, or a work item.
+
+Before a feature like this is switched on for every agent, it has to show it works. For this reviewer, the record so far only shows that it runs, how often it fills in its answer and how often the model call fails. Nothing records whether its proposals were right. The bar it needs to pass asks exactly that, and nothing writes the answer, so the reviewer can never pass it.
+
+This change writes three kinds of short notes to the shared evidence log. Each time the reviewer finishes a review, it notes the verdicts it reached. Each time its model call fails, it notes the failure. And when the operator later decides on one of its proposals, the decision becomes a grade: accepted counts as right, rejected counts as wrong. If the operator changes their mind after the same kind of correction comes back, the latest decision counts. Putting it off, or letting it expire, counts as no grade, because nobody decided anything about the reviewer's call.
+
+The grades come only from the operator's PIN-protected decision. A work item being finished does not count, because the agent usually finishes its own work items, and that would be the reviewer grading itself. The grade measures whether the operator accepted the suggestion, which is close to, but not the same as, whether it was right; the review that reads the grades knows that. Calls where the reviewer said "nothing to do" are not graded yet. The one later signal, the same kind of correction coming back, is a planned follow-up.

@@ -74,6 +74,22 @@ describe('artifactAddressesOperatorSurfaceQuality — both sides of the boundary
   });
 });
 
+describe('artifactAddressesOperatorSurfaceQuality — a §6b copied from the template is not an answer', () => {
+  it('BLOCK: the untouched template (its §6b heading carries the phrase) when the gate supplies the template', () => {
+    expect(artifactAddressesOperatorSurfaceQuality(TEMPLATE, { templateText: TEMPLATE })).toBe(false);
+  });
+  it('PASS: a §6b heading with the author’s own findings', () => {
+    const doc = '## 6b. Operator-surface quality\n\nGrant leads as the open primary block; ids moved to the muted support line; stacks at 390px.\n';
+    expect(artifactAddressesOperatorSurfaceQuality(doc, { templateText: TEMPLATE })).toBe(true);
+  });
+  it('BLOCK: a §6b heading answered only with a placeholder', () => {
+    expect(artifactAddressesOperatorSurfaceQuality('## 6b. Operator-surface quality\n\nn/a\n', { templateText: TEMPLATE })).toBe(false);
+  });
+  it('unchanged: a bespoke artifact that names the question in prose, with no §6b heading, still passes', () => {
+    expect(artifactAddressesOperatorSurfaceQuality('Operator-surface quality: leads with Grant; no raw ids.', { templateText: TEMPLATE })).toBe(true);
+  });
+});
+
 describe('isAuthorizationSurfaceFile — the authorization/approval subset', () => {
   it('YES: mandate/grant/authorization-request/approval renderers + forms', () => {
     expect(isAuthorizationSurfaceFile('dashboard/mandates.js')).toBe(true);

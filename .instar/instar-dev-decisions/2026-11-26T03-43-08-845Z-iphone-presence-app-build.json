@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-26T03:43:08.845Z",
+  "slug": "iphone-presence-app-build",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 32,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobileDeviceKeys.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/needsRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 25,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

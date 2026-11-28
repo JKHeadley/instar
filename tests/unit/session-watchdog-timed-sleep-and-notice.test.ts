@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { classifyProtectedWait, timedSleepDurationMs, EscalationLevel, type InterventionEvent } from '../../src/monitoring/SessionWatchdog.js';
+import { classifyProtectedWait, timedSleepDurationMs, EscalationLevel, type InterventionEvent, hasTimedSleepDescendant, POLL_LOOP_SLEEP_RECENT_MS } from '../../src/monitoring/SessionWatchdog.js';
 import { formatWatchdogSessionNotice, formatWatchdogUserMessage } from '../../src/monitoring/watchdog-notifications.js';
 
 describe('timed sleep floor', () => {
@@ -35,6 +35,35 @@ describe('timed sleep floor', () => {
     expect(classifyProtectedWait('sleep 10500', '', 2 * 3_600_000)).toEqual({ protected: true, reason: 'timed-sleep' }); // the bound is exclusive
     expect(classifyProtectedWait('sleep 10500', '', 2 * 3_600_000 + 1)).toEqual({ protected: false });
     expect(classifyProtectedWait('sleep 10500', '', 3_600_000)).toEqual({ protected: true, reason: 'timed-sleep' });
+  });
+
+  it('a poll loop is protected while a timed sleep runs below it (the shell is the candidate, not its sleep)', () => {
+    // 2026-11-27: a Monitor watch script and a zsh -c poll loop were stopped minutes after starting.
+    const watch = '/bin/zsh /private/tmp/scratchpad/watch-07a05cb5.sh';
+    expect(classifyProtectedWait(watch, '', 240_000)).toEqual({ protected: false });
+    expect(classifyProtectedWait(watch, '', 240_000, ['curl -s -m 30 http://localhost:4042/x', 'sleep 15']))
+      .toEqual({ protected: true, reason: 'poll-loop-sleep' });
+    expect(classifyProtectedWait('/bin/bash with-heavy-turn.sh repair-1 -- git commit', '', 400_000, ['sleep 45']))
+      .toEqual({ protected: true, reason: 'poll-loop-sleep' });
+  });
+
+  it('a poll loop sampled mid-check stays protected only while its sleep was seen recently', () => {
+    const watch = '/bin/zsh /private/tmp/scratchpad/watch.sh';
+    expect(classifyProtectedWait(watch, '', 240_000, ['curl -s http://x'], 'unknown', 20_000))
+      .toEqual({ protected: true, reason: 'poll-loop-sleep' });
+    expect(classifyProtectedWait(watch, '', 600_000, ['curl -s http://x'], 'unknown', POLL_LOOP_SLEEP_RECENT_MS))
+      .toEqual({ protected: true, reason: 'poll-loop-sleep' });
+    // A loop that stopped sleeping (hung inside its check) goes back to the judge.
+    expect(classifyProtectedWait(watch, '', 900_000, ['curl -s http://x'], 'unknown', POLL_LOOP_SLEEP_RECENT_MS + 1))
+      .toEqual({ protected: false });
+    expect(classifyProtectedWait(watch, '', 900_000, ['curl -s http://x'], 'unknown', undefined)).toEqual({ protected: false });
+  });
+
+  it('a poll loop keeps the two-hour bound, and an unbounded sleep below it is no evidence', () => {
+    expect(classifyProtectedWait('/bin/zsh watch.sh', '', 2 * 3_600_000 + 1, ['sleep 15'])).toEqual({ protected: false });
+    expect(classifyProtectedWait('/bin/zsh watch.sh', '', 240_000, ['sleep infinity'])).toEqual({ protected: false });
+    expect(hasTimedSleepDescendant(['sleep 5m'])).toBe(true);
+    expect(hasTimedSleepDescendant(['sleep infinity', 'curl x'])).toBe(false);
   });
 
   it('an unbounded or non-sleep command is not protected by this rule', () => {

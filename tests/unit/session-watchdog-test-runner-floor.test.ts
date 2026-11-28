@@ -48,7 +48,10 @@ describe('SessionWatchdog test-runner floor (ACT-069)', () => {
       .toEqual({ protected: true, reason: 'test-runner-ancestor' });
     expect(classifyProtectedWait("/bin/zsh -lc cd /repo && npm test", '', 190_000, ['npm test', 'node (vitest)']))
       .toEqual({ protected: true, reason: 'test-runner-ancestor' });
-    expect(classifyProtectedWait('/bin/zsh -lc sleep 900', '', 190_000, ['sleep 900'])).toEqual({ protected: false });
+    // A non-test-runner child gives no test-runner floor. (A timed sleep child is now a deliberate
+    // poll-loop wait, protected under its own rule and never as a test-runner ancestor.)
+    expect(classifyProtectedWait('/bin/zsh -lc tail -f build.log', '', 190_000, ['tail -f build.log'])).toEqual({ protected: false });
+    expect(classifyProtectedWait('/bin/zsh -lc sleep 900', '', 190_000, ['sleep 900'])).toEqual({ protected: true, reason: 'poll-loop-sleep' });
   });
 
   it.each([

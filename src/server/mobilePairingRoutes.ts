@@ -1724,12 +1724,14 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       res.json({ devices: own ? [publicDeviceView(own, machine, svc)] : [] });
       return;
     }
-    const local = svc.devices.list().map((d) => publicDeviceView(d, machine, svc));
+    const showBuild = principalOf(req).kind === 'token' || devicePersonOf(req)?.role === 'owner';
+    const local = svc.devices.list().map((d) => publicDeviceView(d, machine, svc, showBuild));
     // Pairing outcome notice §3.6: this machine's recent link outcomes, owner callers only.
     const outcomes = svc.outcomes ? { pairingOutcomes: svc.outcomes.outcomes() } : {};
     if (req.query.scope !== 'pool' || !poolCtx) { res.json({ devices: local, ...outcomes }); return; }
     const pool = await fetchPoolDevices(poolCtx);
-    const devices = [...local, ...pool.rows].sort((a, b) => String(b.pairedAt).localeCompare(String(a.pairedAt)));
+    const peers = showBuild ? pool.rows : pool.rows.map(({ appBuild: _appBuild, ...row }) => row);
+    const devices = [...local, ...peers].sort((a, b) => String(b.pairedAt).localeCompare(String(a.pairedAt)));
     res.json({ devices, pool: { failed: pool.failed }, ...outcomes });
   });
 
@@ -1852,6 +1854,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
     res.json({
       status: d.status, deviceName: d.deviceName, approvedAt: d.approvedAt ?? null,
+      ...(d.status === 'active' && devicePersonOf(req)?.role === 'owner' && d.appBuild ? { appBuild: d.appBuild } : {}),
       // A pending dashboard-path phone (§4.4) tells the operator where the code is.
       ...(d.status === 'pending' && svc.isDashboardPending(d.id) ? { approval: d.role === 'team' ? 'inviter' : 'dashboard' } : {}),
       // Approve instead of a code (mobile-pairing-approve §3.5): this route is the waiting phone's status poll.
@@ -2139,6 +2142,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
         ? { token: b.token, provider, notifyTokenHash: b.notifyTokenHash, revision }
         : { token: b.token, provider, environment: b.environment as 'sandbox' | 'production', notifyTokenHash: b.notifyTokenHash, revision };
     }
+    // Build is optional display metadata. An out-of-contract value cannot break push registration.
+    if (typeof b.appBuild === 'string' && /^[0-9]{1,12}(?:\.[0-9]{1,12}){0,2}$/.test(b.appBuild)) reg.appBuild = b.appBuild;
     let r: ReturnType<typeof svc.devices.setPush>;
     try { r = svc.devices.setPush(p.deviceId, reg); } catch (err) {
       deps.reportDegradation?.('MobilePush.registryWrite', err);
@@ -2591,7 +2596,7 @@ export function personFields(d: DeviceRecord, svc: MobilePairingService): Record
   return { role: p.role, personName: p.ok ? p.name : null, ...(p.ok ? {} : { unassigned: true }) };
 }
 
-function publicDeviceView(d: DeviceRecord, machine: string | null, svc?: MobilePairingService): Record<string, unknown> {
+function publicDeviceView(d: DeviceRecord, machine: string | null, svc?: MobilePairingService, showBuild = false): Record<string, unknown> {
   // A ledger revocation row wins for a browser at once, everywhere (dashboard-conversations-browser-device §4.6).
   let status: DeviceRecord['status'] = d.status;
   if (isBrowserDevice(d) && status !== 'revoked' && svc?.keyLedger && d.browserPublicKey) {
@@ -2602,6 +2607,7 @@ function publicDeviceView(d: DeviceRecord, machine: string | null, svc?: MobileP
     id: d.id, deviceName: d.deviceName, label: d.label, pairedAt: d.pairedAt, status, ...(svc ? personFields(d, svc) : {}),
     ...(isBrowserDevice(d) ? { client: 'browser', lastSeenAt: d.lastSeenAt ?? null, ...(svc && !svc.browserOn() ? { switchedOff: true } : {}) } : {}),
     ...(showFingerprint && d.fingerprint ? { fingerprint: d.fingerprint } : {}),
+    ...(showBuild && status === 'active' && d.appBuild ? { appBuild: d.appBuild } : {}),
     ...(d.approvedAt ? { approvedAt: d.approvedAt } : {}), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}),
     // The app enrolled on that machine's own computer: not an owner phone for another machine's first-phone rule.
     ...(d.localBinding ? { localInstall: true } : {}),
@@ -2851,7 +2857,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
     // Imported Claude/ChatGPT history (import-from-claude-chatgpt §B.3, §D): the owner's app only, never a
     // browser device or a team member. Kept on this machine; the routes read raw for the owner.
-    { method: 'GET', re: /^\/mobile\/imported-history\/(conversations|projects)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
+    { method: 'GET', re: /^\/mobile\/imported-history\/(conversations|projects|capabilities)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
     { method: 'GET', re: /^\/mobile\/imported-history\/conversations\/imported(:|%3a)(claude|chatgpt)(:|%3a)[a-z0-9_.:%-]{1,240}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
     { method: 'GET', re: /^\/mobile\/imported-history\/search$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'imported-reads' },
     { method: 'POST', re: /^\/mobile\/imported-history\/(preview|apply|facts)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 6, bucket: 'imported-import' },
