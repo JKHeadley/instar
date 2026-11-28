@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "autonomous-explicit-deadline",
+  "sessionId": "599a21ed-1e6a-4e32-9ed1-9e2985fee973",
+  "timestamp": "2026-11-28T14:49:51.416Z",
+  "artifactPath": "upgrades/side-effects/autonomous-explicit-deadline.md",
+  "artifactSha256": "7990cdf68aea74020682cce4d0fdb1adfa5ffba2d9b9939c5f5322f5e117cb35",
+  "specPath": "docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md",
+  "coveredFiles": [
+    ".claude/skills/autonomous/hooks/autonomous-stop-hook.sh",
+    ".instar/instar-dev-traces/2026-11-28T14-49-51-416Z-autonomous-explicit-deadline-5fd7f656.json",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/PostUpdateMigrator-vaultAuthResolve.test.ts",
+    "tests/unit/autonomous-stop-hook-scope-accretion.test.ts",
+    "upgrades/side-effects/autonomous-explicit-deadline.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The installed stop hook and stock-hook migration change the fleet deadline enforcement path.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

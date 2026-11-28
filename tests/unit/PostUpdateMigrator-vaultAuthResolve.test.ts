@@ -122,6 +122,26 @@ describe('autonomous-stop-hook.sh VAULT_AUTH_RESOLVE exact-hash upgrade', () => 
     const dst = deploy(projectDir, HOOK_REL, custom);
     const result = run(projectDir);
     expect(fs.readFileSync(dst, 'utf8')).toBe(custom);
-    expect(result.skipped.some((s) => s.includes('no exact stock hash for vault-auth upgrade'))).toBe(true);
+    expect(result.skipped.some((s) => s.includes('no exact stock hash for VAULT_AUTH_RESOLVE upgrade'))).toBe(true);
+  });
+});
+
+
+describe('autonomous stop hook explicit deadline upgrade', () => {
+  const predecessor = '7cb5d8b1f747df20d0e232bd93006f33fff6c581';
+  const marker = 'AUTONOMOUS_EXPLICIT_DEADLINE';
+
+  it('upgrades a deployed stock hook and is idempotent', () => {
+    const blob = execFileSync('git', ['show', `${predecessor}:${HOOK_REL}`]);
+    const projectDir = makeProject();
+    const dst = deploy(projectDir, HOOK_REL, blob);
+    expect(blob.toString()).not.toContain(marker);
+    const first = run(projectDir);
+    expect(first.errors).toEqual([]);
+    const upgraded = fs.readFileSync(dst, 'utf8');
+    expect(upgraded).toContain(marker);
+    expect(fs.statSync(dst).mode & 0o111).not.toBe(0);
+    expect(run(projectDir).upgraded).toEqual([]);
+    expect(fs.readFileSync(dst, 'utf8')).toBe(upgraded);
   });
 });

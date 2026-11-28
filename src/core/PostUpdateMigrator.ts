@@ -8090,7 +8090,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     // for anchor-compatible recent revisions so stock-derived customizations survive.
     // Older canonical stock bytes use the exact historical SHA-256 allowlist;
     // every unknown layout is refused rather than overwritten.
-    const upgradeVaultAuthResolve = (): void => {
+    const upgradeStockStopHook = (marker: string, label: string, stockHashes: readonly string[]): void => {
       // Marker bumped `PREPARATION_CARRIER` → `VAULT_AUTH_RESOLVE`: every server
       // call in the bundled hook now resolves the bearer token vault-aware
       // (config string first, else the encrypted vault via secret-get.mjs). On a
@@ -8098,17 +8098,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       // placeholder and every hook call 403'd. Exact-stock replacement only;
       // customized hook bytes remain untouched.
       const relPath = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
-      const label = 'skills/autonomous/hooks/autonomous-stop-hook.sh (vault-aware bearer-token resolution)';
       try {
         const deployed = path.join(this.config.projectDir, ...relPath.split('/'));
         if (!fs.existsSync(deployed)) return;
         const current = fs.readFileSync(deployed, 'utf8');
-        if (current.includes('VAULT_AUTH_RESOLVE')) return; // already current — idempotent
+        if (current.includes(marker)) return; // already current — idempotent
         const currentSha256 = crypto.createHash('sha256').update(current).digest('hex');
-        const stock = currentSha256 === AUTONOMOUS_STOP_HOOK_PREPARATION_CARRIER_SHA256
-          || (AUTONOMOUS_STOP_HOOK_STOCK_SHA256 as readonly string[]).includes(currentSha256);
+        const stock = stockHashes.includes(currentSha256);
         if (!stock) {
-          result.skipped.push(`${relPath}: customized or unknown layout — left untouched (no exact stock hash for vault-auth upgrade)`);
+          result.skipped.push(`${relPath}: customized or unknown layout — left untouched (no exact stock hash for ${marker} upgrade)`);
           return;
         }
         const bundled = path.join(__dirname, '..', '..', ...relPath.split('/'));
@@ -8117,8 +8115,8 @@ if [[ "$ACTIVE" != "true" ]]; then`;
           return;
         }
         const next = fs.readFileSync(bundled, 'utf8');
-        if (!next.includes('VAULT_AUTH_RESOLVE')) {
-          result.errors.push(`${relPath} migration: bundled hook lacks VAULT_AUTH_RESOLVE`);
+        if (!next.includes(marker)) {
+          result.errors.push(`${relPath} migration: bundled hook lacks ${marker}`);
           return;
         }
         const tempPath = `${deployed}.vault-auth.${process.pid}.${randomUUID()}.tmp`;
@@ -8144,9 +8142,18 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     // autonomous record no longer masks the bounded continuation authority.
     // Exact-stock replacement only; customized hook bytes remain untouched.
     upgradePreparationCarrier();
-    // Marker bumped `PREPARATION_CARRIER` → `VAULT_AUTH_RESOLVE` (hook): see
-    // upgradeVaultAuthResolve above — vault-aware bearer-token resolution.
-    upgradeVaultAuthResolve();
+    // Marker bumped `PREPARATION_CARRIER` → `VAULT_AUTH_RESOLVE` (hook): vault-aware
+    // bearer-token resolution upgrades proven stock copies.
+    upgradeStockStopHook(
+      'VAULT_AUTH_RESOLVE',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (vault-aware bearer-token resolution)',
+      [AUTONOMOUS_STOP_HOOK_PREPARATION_CARRIER_SHA256, ...AUTONOMOUS_STOP_HOOK_STOCK_SHA256],
+    );
+    upgradeStockStopHook(
+      'AUTONOMOUS_EXPLICIT_DEADLINE',
+      'skills/autonomous/hooks/autonomous-stop-hook.sh (explicit run deadline)',
+      ['a7193fff6de4134653b7eb7658814f5e7cea222ea610a4cccd3b7a9318d9e486'],
+    );
     // setup-autonomous.sh marker bumped through `W32_PREPARING_LIVENESS`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
     // wiring was gated on `claude --version >= 2.1.139`, which is empty for a codex agent, so

@@ -1,0 +1,77 @@
+{
+  "ts": "2026-11-28T14:50:28.448Z",
+  "slug": "autonomous-explicit-deadline",
+  "headCommit": "7cb5d8b1f747df20d0e232bd93006f33fff6c581",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 29,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "judgment": {
+    "version": 1,
+    "tierReasoning": "The installed stop hook and stock-hook migration change the fleet deadline enforcement path.",
+    "trace": {
+      "path": ".instar/instar-dev-traces/2026-11-28T14-49-51-416Z-autonomous-explicit-deadline-5fd7f656.json",
+      "hash": "d9af0de4d86819760057e7f28e26bd5f949b0aa1",
+      "staged": true
+    },
+    "traceDiffers": false,
+    "artifact": {
+      "path": "upgrades/side-effects/autonomous-explicit-deadline.md",
+      "hash": "7692ffedc7dddfdf2098022c6485b530d1ac0c36",
+      "stagedHash": "7692ffedc7dddfdf2098022c6485b530d1ac0c36"
+    },
+    "spec": {
+      "path": "docs/specs/ROBUST-SESSION-TIME-AWARENESS-SPEC.md",
+      "hash": "8249830ed3139bfc4e4d4d53fbffca3aa26b634f",
+      "stagedHash": "8249830ed3139bfc4e4d4d53fbffca3aa26b634f",
+      "staged": false,
+      "convergenceReport": {
+        "path": "docs/specs/reports/robust-session-time-awareness-convergence.md",
+        "stagedHash": "4000cc53325022711817c2d71b34440abbc6a645"
+      }
+    },
+    "template": "a33b7e354c2b936bb350305efddc4de1f6e1d658",
+    "headings": {
+      "1. Over-block": "missing",
+      "2. Under-block": "missing",
+      "3. Level-of-abstraction fit": "missing",
+      "4. Signal vs authority compliance": "missing",
+      "4b. Judgment-point check": "missing",
+      "5. Interactions": "missing",
+      "6. External surfaces": "missing",
+      "7. Multi-machine posture": "missing",
+      "8. Rollback cost": "missing",
+      "Second-pass review": {
+        "present": true,
+        "chars": 426
+      }
+    },
+    "secondPassStatus": "required-concurred",
+    "perFileLines": [
+      {
+        "path": "src/core/PostUpdateMigrator.ts",
+        "added": 18,
+        "deleted": 11,
+        "baseBlob": "93f176d3ce7658f2d8d8e4a5604712c42167dce8",
+        "stagedBlob": "17f615a4246e32e3eedae38f296a05608b14498a"
+      }
+    ]
+  }
+}
