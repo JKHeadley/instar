@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { BackupManager } from '../../src/core/BackupManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FeedbackConsumerPromotionStore } from '../../src/feedback-factory/drain/FeedbackConsumerPromotionStore.js';
+import { consumerPromotionSetHash } from '../../src/feedback-factory/drain/consumerPromotionProposal.js';
 import { FeedbackDrainStore } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { FeedbackSourceGenerations } from '../../src/feedback-factory/store/FeedbackSourceGenerations.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
@@ -60,8 +61,10 @@ describe('feedback drain destructive backup/restore', () => {
     const checkpoint = store.checkpointForBackup(5);
     expect(store.restorePending()).toBe(false);
     store.close();
+    const approvedWorkIds = ['work-1', 'work-2', 'work-3', 'work-4', 'work-5'];
     new FeedbackConsumerPromotionStore(path.join(operatedDir, 'consumer-live.json')).promote({
-      approvedBatchBound: 5, evidenceHash: 'b'.repeat(64), operatorDecisionId: 'operator-promote',
+      approvedBatchBound: 5, evidenceHash: consumerPromotionSetHash(approvedWorkIds), operatorDecisionId: 'operator-promote', approvedWorkIds,
+      approvedAttempts: Object.fromEntries(approvedWorkIds.map((id) => [id, 0])),
     });
 
     const manager = new BackupManager(stateDir, undefined, () => false);

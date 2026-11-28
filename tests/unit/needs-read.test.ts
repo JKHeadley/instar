@@ -53,6 +53,144 @@ describe('needs read: the console models run on the server', () => {
 });
 
 describe('needs read: the owner', () => {
+  it('counts only admitted owner cards and emits one in-place action without navigation', async () => {
+    const work = board([
+      { id: 'wc_0123456789abcdef', title: 'One real approval' },
+      { id: 'wc_1111111111111111', title: 'Agent cleanup' },
+      { id: 'wc_2222222222222222', title: 'Dashboard referral' },
+      { id: 'wc_3333333333333333', title: 'Open the dashboard to finish' },
+    ]);
+    const read = reader({ '/work-board': { status: 200, body: work } });
+    let owned = true;
+    const strict = createNeedsComposer({
+      read, consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self',
+      ownerCardCandidate: item => ({
+        responsibility: item.title === 'Agent cleanup' ? 'agent' : 'owner-required',
+        ownerAction: 'approve',
+        actions: [{ kind: 'approval', requestId: 'approval-1' }],
+        presentation: item.title === 'One real approval' ? 'trust-change' : undefined,
+        verifiesCurrentOwnerRequest: action => owned && action.kind === 'approval' && action.requestId === 'approval-1',
+        handoffs: item.title === 'Dashboard referral' ? ['/dashboard'] : [],
+      }),
+    });
+    const result = await strict.owner();
+    expect(result.count).toBe(1);
+    expect(result.divertedCount).toBe(1);
+    expect(result.notes).toContain('Some requests are temporarily unavailable.');
+    expect(result.complete).toBe(false);
+    expect(result.items[0]).toMatchObject({ title: 'Review a trust change', ownerAction: 'approve', action: { kind: 'approval', requestId: 'approval-1' } });
+    expect(result.items[0]).not.toHaveProperty('card');
+    expect(result.items[0]).not.toHaveProperty('alsoOpens');
+    expect(JSON.stringify(result.items)).not.toContain('#/');
+    owned = false;
+    const reassigned = await strict.owner();
+    expect(reassigned.items).toEqual([]);
+    expect(reassigned.count).toBe(0);
+    expect(reassigned.divertedCount).toBe(1);
+  });
+
+  it('does not admit an internal Work Board row carrying a typed no-action declaration', async () => {
+    const work = board([{ id: 'wc_0123456789abcdef', title: 'Legacy recommendation' }]);
+    Object.assign(work.lanes[0].cards[0], { ownerAction: false });
+    const strict = createNeedsComposer({
+      read: reader({ '/work-board': { status: 200, body: work } }),
+      consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self',
+      ownerCardCandidate: () => ({
+        responsibility: 'owner-required', ownerAction: 'approve',
+        actions: [{ kind: 'approval', requestId: 'unexpected' }],
+        handoffs: [], presentation: 'trust-change', verifiesCurrentOwnerRequest: () => true,
+      }),
+    });
+    expect(await strict.owner()).toMatchObject({ count: 0, items: [], divertedCount: 1 });
+  });
+
+  it('counts repository inventory as agent work without trying to turn it into an approval', async () => {
+    const repo = { key: 'repos:no-remote:m_self', machineId: 'm_self', title: 'Repository without a backup copy', kind: 'no-remote', repos: ['example'] };
+    let calls = 0;
+    const strict = createNeedsComposer({
+      read: reader({ '/repos?scope=pool': { status: 200, body: { defects: [repo] } } }),
+      consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self',
+      ownerCardCandidate: () => { calls++; return undefined; },
+    });
+    expect(await strict.owner()).toMatchObject({ count: 0, items: [], divertedCount: 1 });
+    expect(calls).toBe(0);
+  });
+
+  it('admits the current same-source row after an earlier copy was held', async () => {
+    const id = 'wc_0123456789abcdef';
+    const strict = createNeedsComposer({
+      read: reader({ '/work-board': { status: 200, body: board([{ id, title: 'Earlier ask' }, { id, title: 'Current ask' }]) } }),
+      consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self',
+      ownerCardCandidate: item => ({
+        responsibility: 'owner-required', ownerAction: 'approve',
+        actions: [{ kind: 'approval', requestId: item.title === 'Current ask' ? 'current' : 'earlier' }],
+        handoffs: [], presentation: 'trust-change',
+        verifiesCurrentOwnerRequest: action => action.kind === 'approval' && action.requestId === 'current',
+      }),
+    });
+    const result = await strict.owner();
+    expect(result.items).toEqual([expect.objectContaining({ action: { kind: 'approval', requestId: 'current' } })]);
+    expect(result.divertedCount).toBe(0);
+  });
+
+  it('reports unavailable peer promises even when the local count is finite', async () => {
+    const strict = createNeedsComposer({
+      read: reader({
+        '/commitments?scope=mesh': { status: 200, body: { scope: 'mesh', commitments: [] } },
+        '/pool': { status: 200, body: { selfMachineId: 'm_self', machines: [{ machineId: 'm_peer' }] } },
+      }),
+      consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self', ownerCardCandidate: () => null,
+    });
+    const result = await strict.owner();
+    expect(result.count).toBe(0);
+    expect(result.complete).toBe(false);
+    expect(result.couldNotCheck).toContain('promises on other machines');
+  });
+
+  it('resolves concurrent in-place reads separately for each request', async () => {
+    const app = express();
+    const work = board([{ id: 'wc_0123456789abcdef', title: 'Approval requiring a device' }]);
+    mountNeedsRoutes(app, {
+      read: reader({ '/work-board': { status: 200, body: work } }),
+      bearerOk: () => true,
+      boardFor: () => { throw new Error('unexpected team read'); },
+      consoleDir: CONSOLE,
+      agentName: () => 'Echo',
+      machineId: () => 'm_self',
+      ownerCardCandidate: async (_item, req) => {
+        const fixture = req?.get('X-Fixture-Principal');
+        if (fixture === 'other-device') return null;
+        return {
+          responsibility: 'owner-required',
+          ownerAction: 'approve',
+          actions: [{ kind: 'approval', requestId: 'current-approval' }],
+          handoffs: [],
+          presentation: 'trust-change',
+          verifiesCurrentOwnerRequest: action => {
+            if (fixture === 'source-failure') throw new Error('fixture source unavailable');
+            return fixture !== 'stale' && action.kind === 'approval' && action.requestId === 'current-approval';
+          },
+        };
+      },
+    });
+    const read = (principal: string) => request(app).get('/needs')
+      .set('X-Instar-Needs-Contract', 'in-place-v1').set('X-Fixture-Principal', principal);
+    const [eligible, other] = await Promise.all([read('eligible-device'), read('other-device')]);
+    expect(eligible.status).toBe(200);
+    expect(eligible.body.items).toEqual([expect.objectContaining({ title: 'Review a trust change' })]);
+    expect(other.status).toBe(200);
+    expect(other.body.items).toEqual([]);
+    expect(other.body.divertedCount).toBe(0);
+    const [stale, failed] = await Promise.all([read('stale'), read('source-failure')]);
+    expect(stale.body.items).toEqual([]);
+    expect(stale.body.notes).not.toContain('Some requests are temporarily unavailable.');
+    expect(stale.body.couldNotCheckApprovalCount).toBe(0);
+    expect(failed.body.items).toEqual([]);
+    expect(failed.body.notes).toContain("Couldn't check one approval.");
+    expect(failed.body.couldNotCheckApprovalCount).toBe(1);
+    expect(failed.body.divertedCount).toBe(0);
+  });
+
   it('reports scheduled launches and explicit asks but no approval for unscheduled tracking', async () => {
     const base = { kind: 'project', status: 'active', autoAdvance: false, lastTouchedAt: iso(0),
       phases: [], currentPhaseIndex: 0, rounds: [{ name: 'First step', status: 'pending', itemIds: [] }] };
@@ -76,6 +214,49 @@ describe('needs read: the owner', () => {
     expect(a.couldNotCheck).toEqual([]);
     expect(a.schemaVersion).toBe(1);
     expect(a.agent.name).toBe('Echo');
+  });
+
+  it('lists an undelivered trust request as a stable owner need and keeps expiry and closed states honest', async () => {
+    const pending = { requestId: 'tr-board-policy', changeKind: 'board-policy', status: 'open', adapter: 'telegram', delivered: false, summary: ['Start internal Work Board cards.'], expiresAt: iso(60) };
+    const a = await composer({ '/trust/requests': { status: 200, body: { requests: [pending, { ...pending, requestId: 'old', expiresAt: iso(-1) }, { ...pending, requestId: 'closed', status: 'consumed' }], approvalDelivery: { state: 'accepted', message: 'Review this in Changes to approve in Instar.' } } } }).owner();
+    expect(a.items.filter(i => i.source === 'trust-requests')).toHaveLength(1);
+    expect(a.items.find(i => i.source === 'trust-requests')).toMatchObject({ id: 'need:trust:tr-board-policy',
+      title: 'Review how the agent starts work cards', action: { kind: 'href', href: '#/settings/allowed?s=approvals&request=tr-board-policy' } });
+    expect(a.items.find(i => i.source === 'trust-requests')!.why).toContain('unconfirmed');
+    expect(a.sources.find(i => i.id === 'trust-requests')).toMatchObject({ posture: 'replicated', state: 'ok' });
+  });
+
+  it('does not let an undeclared attention row mask an exact trust approval', async () => {
+    const source = {
+      requestId: 'tr-board-policy', changeKind: 'board-policy', status: 'open', adapter: 'device',
+      delivered: true, summary: ['Start internal Work Board cards.'], expiresAt: iso(60),
+    };
+    const responses = {
+      '/attention?scope=pool&status=OPEN': attention([
+        { id: 'maintenance', title: 'Maintenance related to tr-board-policy', priority: 'URGENT', status: 'OPEN', updatedAt: iso(-1) },
+      ]),
+      '/trust/requests': { status: 200, body: { requests: [source] } },
+    };
+    const result = await createNeedsComposer({
+      read: reader(responses), consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self', now: () => NOW,
+      ownerCardCandidate: item => item.source === 'trust-requests' ? {
+        responsibility: 'owner-required', ownerAction: 'approve',
+        actions: [{ kind: 'approval', requestId: source.requestId }],
+        handoffs: [], presentation: 'trust-change', verifiesCurrentOwnerRequest: () => true,
+      } : undefined,
+    }).owner();
+    expect(result.divertedCount).toBe(1);
+    expect(result.items).toEqual([expect.objectContaining({
+      source: 'trust-requests', action: { kind: 'approval', requestId: source.requestId },
+    })]);
+  });
+
+  it('an unreadable trust source is named rather than silently empty', async () => {
+    for (const result of [{ status: 500, body: {} }, { status: 200, body: {} }]) {
+      const a = await composer({ '/trust/requests': result }).owner();
+      expect(a.complete).toBe(false);
+      expect(a.couldNotCheck).toContain('changes waiting for approval');
+    }
   });
 
   it('a failed source is never a zero: the read is incomplete and names it', async () => {
@@ -372,4 +553,16 @@ it('the shared owner read excludes a real capacity wait while retaining a real r
  expect(res.sources.find(s=>s.id==='health')?.state).toBe('ok');
  expect(res.items.filter(i=>i.source==='health').map(i=>i.title)).toEqual(['iMessage isn’t connected']);
  expect(res.count).toBe(1);
+});
+
+it('counts an agent-owned Health incident without exposing it as an owner action', async () => {
+  const body = summarizeHealth({ status: 'degraded', sessions: { current: 25, max: 25 } }, []);
+  const result = await createNeedsComposer({
+    read: reader({ '/mobile/health-issues': { status: 200, body } }),
+    consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self',
+    ownerCardCandidate: () => { throw new Error('The explicit agent classification should not query owner authority'); },
+  }).owner();
+  expect(body.issues).toEqual([expect.objectContaining({ id: 'health:sessions-full', requiresUserAction: false })]);
+  expect(result).toMatchObject({ count: 0, items: [], divertedCount: 1 });
+  expect(result.sources.find(source => source.id === 'health')?.state).toBe('ok');
 });

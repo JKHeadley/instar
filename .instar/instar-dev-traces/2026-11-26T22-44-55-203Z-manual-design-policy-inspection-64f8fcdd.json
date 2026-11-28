@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "manual-design-policy-inspection",
+  "sessionId": "f8f664df-664b-4990-af93-c5dbd1572614",
+  "timestamp": "2026-11-26T22:44:55.203Z",
+  "artifactPath": "upgrades/side-effects/manual-design-policy-inspection.md",
+  "artifactSha256": "937183346df6f7fe696625c90c305615c8dc0cb76b6a7aa2976ce753e755bb58",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-26T22-44-27-142Z-manual-design-policy-inspection.json",
+    "docs/design/manual-inspection.md",
+    "src/designGate/policyInspection.ts",
+    "src/localVerify/harnessClassifier.ts",
+    "tests/unit/design-policy-inspection.test.ts",
+    "tests/unit/localVerify/harnessClassifier.test.ts",
+    "upgrades/side-effects/manual-design-policy-inspection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Review fixes to the approved manual signal-only inspector: narrows a merge-routing list to the spec's gate files and adds a removed-rule signal.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One explicit manual invocation owns finite read-only Git children; no self-triggered loop."
+  }
+}

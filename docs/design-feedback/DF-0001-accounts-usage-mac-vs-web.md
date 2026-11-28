@@ -175,7 +175,15 @@ This section is the brief for the Apple app session, which is building the fix. 
 | Diagnosis | Complete, 2026-11-21 |
 | Rules | Added to `docs/DESIGN-STANDARD.md` (17 added, 5 sharpened), each marked "Earned from: DF-0001" |
 | Fix | In progress by the Apple app session |
-| Server and web changes | Not started; listed above |
+| Server and web changes | Stage 1 merged in PR 3643 on 2026-11-22, commit efebc69fab1a8de7a618faf3ef1541cf28205147: fixed limit order, canonical names and rounded 75/90 tones with rolled-over readings excluded. This does not certify every server/web item in this diagnosis. |
 | Automatic checks for the new rules | Not built yet; the rules marked "machine" in the standard say what each check measures |
 | Closed | No. Closes when the side-by-side captures pass every rule listed above |
 
+
+## Stage 1 And Native Adoption Record
+
+The approved standard merged in PR 3642 (f16742a3e327d1048bd39fb3ed4fd9448b01e58e). The first server usage-data increment then merged in PR 3643. The app contract is: retain the received 5-hour, Weekly and Fable weekly order; use the supplied name and tone; do not color a rolled-over value or select it as the fullest active limit; preserve an explicit older-server fallback. Apple and Windows owners acknowledged this contract. The web sort, naming, full design comparison and every remaining problem above still require their own evidence; merging this increment does not close this entry.
+
+Windows has separate scoped design acceptances for synthetic usage color/provenance views at source ad0eab75d9fe2e578fe9f49fdb746cf88738decb, the carried Accounts layout at 0aae648542d14f8e1e32b9dff606c80f5a13961d, and navigation/status wrapping at 405421ab5bac143ba3b219975d0b0e5b08eaa428. Those drafts remain separate from release. Their records are observed and unsigned, not an independent Windows rebuild. Light-theme native proof and the broader Accounts requirements remain open. Original failed views are retained privately. The register does not certify Apple usage parity from a navigation release, nor close Android, Linux, native install or release requirements.
+
+The gate foundation is being built under project approval 147024. Local synthetic Accounts captures and focused component tests are development evidence, not an active merge gate or completion of the automatic checks above.

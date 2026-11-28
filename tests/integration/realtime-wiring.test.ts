@@ -13,7 +13,7 @@
  *   - Export verification from src/index.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -843,26 +843,28 @@ describe('CoordinationProtocol <-> ConflictNegotiator integration', () => {
 // ── Export Verification ─────────────────────────────────────────────
 
 describe('Phase 8 export verification', () => {
-  it('AgentBus class is exported from index', async () => {
-    const mod = await import('../../src/index.js');
+  let mod: typeof import('../../src/index.js');
+  // A cold source transform belongs to fixture setup, before timing the export assertions.
+  beforeAll(async () => {
+    mod = await import('../../src/index.js');
+  }, 60_000);
+
+  it('AgentBus class is exported from index', () => {
     expect(mod.AgentBus).toBeDefined();
     expect(typeof mod.AgentBus).toBe('function');
   });
 
-  it('CoordinationProtocol class is exported from index', async () => {
-    const mod = await import('../../src/index.js');
+  it('CoordinationProtocol class is exported from index', () => {
     expect(mod.CoordinationProtocol).toBeDefined();
     expect(typeof mod.CoordinationProtocol).toBe('function');
   });
 
-  it('ConflictNegotiator class is exported from index', async () => {
-    const mod = await import('../../src/index.js');
+  it('ConflictNegotiator class is exported from index', () => {
     expect(mod.ConflictNegotiator).toBeDefined();
     expect(typeof mod.ConflictNegotiator).toBe('function');
   });
 
-  it('AgentBus can be instantiated via index export', async () => {
-    const mod = await import('../../src/index.js');
+  it('AgentBus can be instantiated via index export', () => {
     const tmpDir = makeTmpDir('export-verify-');
     try {
       const bus = new mod.AgentBus({
@@ -877,8 +879,7 @@ describe('Phase 8 export verification', () => {
     }
   });
 
-  it('CoordinationProtocol can be instantiated via index export', async () => {
-    const mod = await import('../../src/index.js');
+  it('CoordinationProtocol can be instantiated via index export', () => {
     const tmpDir = makeTmpDir('export-verify-coord-');
     try {
       const bus = new mod.AgentBus({
@@ -897,8 +898,7 @@ describe('Phase 8 export verification', () => {
     }
   });
 
-  it('ConflictNegotiator can be instantiated via index export', async () => {
-    const mod = await import('../../src/index.js');
+  it('ConflictNegotiator can be instantiated via index export', () => {
     const tmpDir = makeTmpDir('export-verify-neg-');
     try {
       const bus = new mod.AgentBus({

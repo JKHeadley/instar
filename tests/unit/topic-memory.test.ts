@@ -574,6 +574,17 @@ describe('TopicMemory', () => {
       expect(results).toHaveLength(0);
     });
 
+    it('matches dotted names and hyphenated IDs as literal phrases', () => {
+      topicMemory.insertMessage({
+        messageId: 4, topicId: 100, text: 'Prior work on instar.sh belongs to SEC-123.',
+        fromUser: true, timestamp: '2026-02-24T12:03:00Z', sessionName: null,
+      });
+      expect(topicMemory.search('instar.sh')).toHaveLength(1);
+      expect(topicMemory.search('SEC-123')).toHaveLength(1);
+      expect(topicMemory.search('instarsh')).toHaveLength(0);
+      expect(topicMemory.search('SEC-124')).toHaveLength(0);
+    });
+
     it('sanitizes FTS5 special syntax', () => {
       // These should not throw — special chars are stripped
       expect(() => topicMemory.search('AND OR NOT')).not.toThrow();

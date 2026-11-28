@@ -10,6 +10,33 @@ import { ago } from './home-model.js';
 import { verifiedDisplayName } from './display-identity.js';
 import { unreachableClause, poolMachine } from './unreachable-model.js';
 
+/** Open exact-change requests, shared by the Allowed page and Needs-you. No approval authority here. */
+export function buildTrustRequests(res, now = Date.now()) {
+  if (!res || !res.ok) return { ok: false, reason: res && res.reason || 'The approval requests could not be read.', rows: [] };
+  const d = res.data;
+  if (!d || !Array.isArray(d.requests)) return { ok: false, reason: 'The approval request answer was incomplete.', rows: [] };
+  const delivery = d.approvalDelivery;
+  const state = delivery && ['accepted', 'setup', 'none', 'unknown'].includes(delivery.state) ? delivery.state : 'unknown';
+  const message = delivery && typeof delivery.message === 'string' && delivery.message.trim() ? delivery.message.trim() : null;
+  const rows = d.requests.filter((r) => r && r.status === 'open' && typeof r.requestId === 'string'
+    && Number.isFinite(Date.parse(r.expiresAt)) && Date.parse(r.expiresAt) > now).map((r) => {
+    const summary = Array.isArray(r.summary) ? r.summary.filter((s) => typeof s === 'string') : [];
+    let continuation;
+    if (state === 'accepted') continuation = message || 'Open Changes to approve in the paired Instar app to review this request.';
+    else if (state === 'setup') continuation = message || 'Set up approvals in the paired Instar app before approving this request.';
+    else if (state === 'unknown') continuation = message || 'I could not check which device can approve right now. Refresh this list against the machine deciding approvals.';
+    else if (r.delivered === true && (r.adapter === 'telegram' || r.adapter === 'slack')) continuation = 'Open the private approval chat and reply to this exact request card.';
+    else if (r.adapter === 'device') continuation = message || 'No approving device is reachable. Reconnect your approving iPhone or a Mac with Touch ID.';
+    else continuation = message || 'Chat delivery is unconfirmed. Set up approvals in the Instar app, or check your private approval chat.';
+    const unconfirmed = r.adapter !== 'device' && r.delivered !== true;
+    return { key: `trust:${r.requestId}`, requestId: r.requestId, summary, chatDeliveryUnconfirmed: unconfirmed,
+      main: ({ 'board-policy': 'Review how the agent starts work cards', 'one-action': 'Review an action the agent wants to take once', 'trust-grant': 'Review what the agent may do' })[r.changeKind] || 'Review a requested change', continuation,
+      sub: `${unconfirmed && !continuation.startsWith('Chat delivery is unconfirmed.') ? 'Chat delivery is unconfirmed. ' : ''}${continuation}`,
+      expiresAt: r.expiresAt, deliveryState: state };
+  });
+  return { ok: true, rows, deliveryState: state };
+}
+
 // ── Profile ───────────────────────────────────────────────────────────────
 export const PROFILES = ['cautious', 'supervised', 'collaborative', 'autonomous'];
 

@@ -12,10 +12,15 @@ import { matchesAny, normalizePath } from './glob.js';
 
 /** Globs whose change routes a PR to the operator. */
 export const HARNESS_GLOBS: readonly string[] = Object.freeze([
+  // The design gate's own files (design-standard-enforcement spec, section 1).
+  // The standard and other docs/design pages are not on this list: an ordinary
+  // rule change must not wait on independent review. The standard-weakened check
+  // and the standard lint govern those instead.
   'src/designGate/**',
-  'src/commands/designPolicy.ts',
-  'docs/design/**',
-  'docs/DESIGN-STANDARD.md',
+  'src/commands/designInspect.ts',
+  'docs/design/screens.json',
+  'docs/design/coverage.json',
+  'docs/design/rule-ids.lock.json',
   'scripts/local-verify.mjs',
   'scripts/safe-merge.mjs',
   // The merge authority's own server side: floor selection, verify queue and

@@ -26,6 +26,13 @@ try {
 
 const started = Date.now();
 const processing = new FeedbackProcessingService({ dataDir: dir });
+let clusteringMs = 0;
+const processProjected = processing.processProjected.bind(processing);
+processing.processProjected = (records) => {
+  const start = performance.now();
+  try { return processProjected(records); }
+  finally { clusteringMs = performance.now() - start; }
+};
 const store = new FeedbackDrainStore({ dbPath: path.join(dir, 'feedback-drain.db'), tokenHmacKey: 'k'.repeat(32) });
 store.mutateAuthority({ action: 'create', operatorDecisionRef: 'perf', authorityId: 'authority', agentId: 'perf',
   ownerMachineId: 'perf-host', ownerEpoch: 1, provider: 'openai', modelFamily: 'gpt-5',
@@ -50,7 +57,10 @@ const service = new FeedbackDrainService({ store, processing, consumer: { consum
   return productionConsumer.consume(work);
 } },
   arbiter, authorityId: 'authority', ownerHost: 'perf-host', ownerEpoch: () => 1, isCanonicalOwner: () => true,
-  isConsumerLive: () => true, consumerBatchBound: () => 10, maxReadyScansPerTick: 250, maxClaimsPerTick: 10 });
+  isConsumerLive: () => true,
+  // Loaded verifier baselines exceeded the default 20s while writing 500 durable status rows
+  // alongside the concurrent ingester. Keep this stage below half of the 90s fixture envelope.
+  clusteringStageBudgetMs: 45_000, consumerBatchBound: () => 10, maxReadyScansPerTick: 250, maxClaimsPerTick: 10 });
 const appendWorker = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'feedback-performance-concurrent-ingest.mjs');
 const viteNode = path.resolve('node_modules', '.bin', 'vite-node');
 const concurrent = new Promise((resolve, reject) => {
@@ -62,7 +72,7 @@ const tick = await service.tick();
 await concurrent;
 const metrics = store.metrics();
 process.stdout.write(JSON.stringify({
-  processed: tick.processed, durationMs: Date.now() - started, tickResult: tick.result,
+  processed: tick.processed, clusteringMs, durationMs: Date.now() - started, tickResult: tick.result,
   rssBytes: process.memoryUsage().rss, sourceLagBytes: metrics.sourceProjectionLagBytes,
   projectionLag: processing.stats().byStatus.unprocessed ?? 0,
   queued: metrics.work.queued, completed: metrics.work.completed, wouldCreate: tick.wouldCreate, completedWithinTicks: consumed.includes('feedback-work:oldest-eligible:1') ? 1 : null,

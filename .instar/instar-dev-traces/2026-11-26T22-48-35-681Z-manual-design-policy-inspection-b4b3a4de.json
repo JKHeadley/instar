@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "manual-design-policy-inspection",
+  "sessionId": "226c8fd7-d30f-4ba9-b47b-e02a86950234",
+  "timestamp": "2026-11-26T22:48:35.681Z",
+  "artifactPath": "upgrades/side-effects/manual-design-policy-inspection.md",
+  "artifactSha256": "b7cb35896f2758ab896a2f89478e964f302e2340aa4b188d77d0ea307fcd0a24",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "src/localVerify/harnessClassifier.ts",
+    "tests/unit/localVerify/harnessClassifier.test.ts",
+    "upgrades/side-effects/manual-design-policy-inspection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Independent second-pass review of the harness-changing file at head 21c8cc467; tier and spec as declared by the branch.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
