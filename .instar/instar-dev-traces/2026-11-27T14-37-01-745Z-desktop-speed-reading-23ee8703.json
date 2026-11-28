@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "desktop-speed-reading",
+  "sessionId": "e197595b-784b-43bd-a9ea-d7c04634f1a7",
+  "timestamp": "2026-11-27T14:37:01.745Z",
+  "artifactPath": "upgrades/side-effects/desktop-speed-reading.md",
+  "artifactSha256": "15c96819ff4c3d18c282039b123dfc85b34121c2df5c61f50028026c64b29c3b",
+  "coveredFiles": [
+    "dashboard/desktop.css",
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/desktop-speed-reading.eli16.md",
+    "docs/specs/desktop-speed-reading.md",
+    "tests/unit/desktop-feel-meter.test.ts",
+    "upgrades/next/desktop-speed-reading.md",
+    "upgrades/side-effects/desktop-speed-reading.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Viewer-only measurement shown on request; no server, protocol, host or stored state change.",
+  "eli16Path": "docs/specs/desktop-speed-reading.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-speed-reading.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

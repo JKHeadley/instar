@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "desktop-live-reading-driver",
+  "sessionId": "e197595b-784b-43bd-a9ea-d7c04634f1a7",
+  "timestamp": "2026-11-27T15:07:38.879Z",
+  "artifactPath": "upgrades/side-effects/desktop-live-reading-driver.md",
+  "artifactSha256": "51abe95660d0d3a405d3e4e9336c19c2cbd50b2377b80c8b0670bd58672b2e32",
+  "coveredFiles": [
+    "docs/specs/desktop-live-reading.eli16.md",
+    "scripts/desktop-live-reading.mjs",
+    "upgrades/side-effects/desktop-live-reading-driver.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A standalone operator measurement script with no importer and no automatic run.",
+  "eli16Path": "docs/specs/desktop-live-reading.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-live-reading-driver.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot operator-run measurement that ends with Stop; not a self-triggered loop"
+  }
+}

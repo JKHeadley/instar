@@ -33,6 +33,92 @@ function videoContract(codec) {
   return codec === 'h264' ? 'desktop-video-v1:annexb:avc1.420028:1920x1080:g1'
     : 'desktop-video-v1:jpeg:g1';
 }
+// How it feels, measured in this viewer only: the time from an action leaving
+// here until the next new picture is shown, and how evenly pictures arrive.
+// The host sends only changed pictures, so the next picture after an action is
+// normally that action's result. Numbers only; nothing leaves this page.
+const FEEL_WINDOW_MS = 1_500; // a picture later than this did not answer the action
+const FEEL_REPLACE_MS = 300; // an action still unanswered after this gives way to a newer one
+const FEEL_MOTION_GAP_MS = 500; // a longer gap is a still screen, not a stutter
+const FEEL_SAMPLES = 240;
+const FEEL_MIN_SAMPLES = 5;
+const FEEL_MIN_GAPS = 10;
+// The host does not draw its own pointer, so a plain move rarely changes the
+// picture; a release follows its press within moments; and a modifier press
+// (Shift, Ctrl, Alt, Command) changes nothing until the key it modifies. None is timed.
+const FEEL_UNTIMED = new Set(['move', 'buttonUp', 'keyUp', 'modifier']);
+const FEEL_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
+const feel = { pendingAt: null, delays: [], gaps: [], lastPaintAt: null, painted: 0, actions: 0, unanswered: 0 };
+function feelNow() { return performance.now(); }
+function feelReset() {
+  Object.assign(feel, { pendingAt: null, delays: [], gaps: [], lastPaintAt: null, painted: 0, actions: 0, unanswered: 0 });
+}
+function feelKeep(list, value) { list.push(value); if (list.length > FEEL_SAMPLES) list.shift(); }
+function feelInput(kind, now = feelNow()) {
+  if (FEEL_UNTIMED.has(kind)) return;
+  if (feel.pendingAt !== null && now - feel.pendingAt < FEEL_REPLACE_MS) return; // a burst: time its first action
+  // An earlier action that nothing answered in time is not this one's start.
+  if (feel.pendingAt !== null) feel.unanswered++;
+  feel.pendingAt = now;
+  feel.actions++;
+}
+function feelPainted(now = feelNow()) {
+  feel.painted++;
+  if (feel.lastPaintAt !== null && now - feel.lastPaintAt <= FEEL_MOTION_GAP_MS) feelKeep(feel.gaps, now - feel.lastPaintAt);
+  feel.lastPaintAt = now;
+  if (feel.pendingAt === null) return;
+  const delay = now - feel.pendingAt;
+  feel.pendingAt = null;
+  if (delay <= FEEL_WINDOW_MS) feelKeep(feel.delays, delay);
+  else feel.unanswered++;
+}
+/** A JPEG counts once decoded, unless a newer stream has replaced it. A browser
+ * also rejects the decode of a picture whose src changed; that is not counted. */
+function feelOnDecoded(image, epoch) {
+  image?.decode?.().then(() => { if (epoch === streamEpoch) feelPainted(); }, () => {});
+}
+/** A new connection must not answer an action sent on the one before it. */
+function feelForgetPending() { feel.pendingAt = null; feel.lastPaintAt = null; }
+function feelPercentile(values, fraction) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1))];
+}
+function feelSummary() {
+  const round = value => value === null ? null : Math.round(value);
+  const gapTypical = feel.gaps.length >= FEEL_MIN_GAPS ? feelPercentile(feel.gaps, 0.5) : null;
+  return {
+    actions: feel.actions,
+    answered: feel.delays.length,
+    unanswered: feel.unanswered,
+    typicalDelayMs: round(feelPercentile(feel.delays, 0.5)),
+    worstDelayMs: round(feelPercentile(feel.delays, 0.95)),
+    picturesPerSecond: gapTypical ? Math.round(10_000 / gapTypical) / 10 : null,
+    longestGapMs: feel.gaps.length >= FEEL_MIN_GAPS ? round(feelPercentile(feel.gaps, 0.95)) : null,
+  };
+}
+function feelText(summary = feelSummary()) {
+  if (summary.answered < FEEL_MIN_SAMPLES) {
+    return 'Measuring speed: click, type or scroll on the remote screen a few times.';
+  }
+  const rate = summary.picturesPerSecond;
+  const smooth = rate === null ? ''
+    : ` · ${rate} ${rate === 1 ? 'picture' : 'pictures'} a second while it changes`;
+  return `Delay ${summary.typicalDelayMs} ms typical, ${summary.worstDelayMs} ms at worst${smooth}`;
+}
+let feelShown = false;
+let feelTimer = 0;
+function syncFeelReadout() {
+  const readout = $('speedReadout');
+  const button = $('speedButton');
+  if (button) button.setAttribute('aria-pressed', String(feelShown));
+  if (!readout) return;
+  const live = feelShown && inputEnabled;
+  readout.hidden = !feelShown;
+  if (feelShown) readout.textContent = feelText();
+  if (live && !feelTimer) feelTimer = setInterval(syncFeelReadout, 1_000);
+  if (!live && feelTimer) { clearInterval(feelTimer); feelTimer = 0; }
+}
 let lastMoveAt = 0;
 let pendingMove = null;
 let moveFrame = 0;
@@ -382,6 +468,7 @@ function receiveH264(bytes, epoch) {
           const context = canvas.getContext('2d');
           if (!context) throw new Error('Canvas unavailable.');
           context.drawImage(frame, 0, 0, canvas.width, canvas.height);
+          feelPainted();
           if (decoderStartupTimer) { clearTimeout(decoderStartupTimer); decoderStartupTimer = 0; }
           canvas.hidden = false;
           $('screen').hidden = true;
@@ -529,6 +616,8 @@ async function receiveFrame(recordBuffer, epoch) {
   frameUrl = URL.createObjectURL(new Blob([frame], { type: 'image/jpeg' }));
   $('screen').src = frameUrl;
   $('screen').hidden = false;
+  // Timed when the picture has decoded, not when it arrived.
+  feelOnDecoded($('screen'), epoch);
   if (old) URL.revokeObjectURL(old);
 }
 function clearFrame() {
@@ -545,6 +634,7 @@ function showMachinePicker() {
 function leave(message) {
   streamEpoch++;
   inputEnabled = false;
+  syncFeelReadout(); // stops the once-a-second update while nothing is live
   if (socket) { socket.close(); socket = undefined; }
   if (heartbeat) { clearInterval(heartbeat); heartbeat = 0; }
   if (moveFrame) { cancelAnimationFrame(moveFrame); moveFrame = 0; }
@@ -904,6 +994,7 @@ $('retryButton').addEventListener('click', async () => {
 
 async function requestDesktop() {
   $('retryButton').hidden = true;
+  feelReset(); // a new session starts its own speed reading; a reconnect keeps it
   reconnectAttempts = 0;
   resumeTransportFailures = 0;
   stopping = false;
@@ -998,6 +1089,7 @@ async function openStream(result, resume = null) {
     ['instar-desktop-v1', `ticket.${ticket.ticket}`]);
   const streamSocket = socket;
   const epoch = ++streamEpoch;
+  feelForgetPending();
   sendChain = Promise.resolve();
   receiveChain = Promise.resolve();
   socket.binaryType = 'arraybuffer';
@@ -1036,6 +1128,7 @@ async function openStream(result, resume = null) {
     updateCursor();
     $('machineName').textContent = ticket.label;
     status('Remote desktop is live.');
+    syncFeelReadout();
     void refreshDisplays(epoch);
     if (resume !== null) resumeAttempt = null;
     resumeTransportFailures = 0;
@@ -1074,6 +1167,7 @@ function send(action) {
   if (refusedAtLock(action)) return Promise.resolve(true);
   if (screenSwitch && Date.now() - screenSwitch.at >= SCREEN_SWITCH_LIMIT_MS) screenSwitch = null;
   if (screenSwitch && ['click', 'buttonDown', 'move'].includes(action.kind)) return Promise.resolve(false);
+  feelInput(action.kind === 'keyDown' && FEEL_MODIFIERS.has(action.key) ? 'modifier' : action.kind);
   return sendCommand({ type: 'input', action });
 }
 function imageArea() {
@@ -1406,6 +1500,7 @@ $('dragButton').addEventListener('click', () => {
   beginHold('left');
 });
 $('rightButton').addEventListener('click', () => clickCursor('right'));
+$('speedButton')?.addEventListener('click', () => { feelShown = !feelShown; syncFeelReadout(); });
 for (const button of document.querySelectorAll('[data-remote-key]')) {
   button.addEventListener('click', () => {
     const key = button.dataset.remoteKey;

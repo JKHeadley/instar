@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "desktop-live-reading-driver",
+  "sessionId": "dcbdf3b8-b0ce-4950-9a7c-d8e435210733",
+  "timestamp": "2026-11-28T08:30:51.146Z",
+  "artifactPath": "upgrades/side-effects/desktop-live-reading-driver.md",
+  "artifactSha256": "0f4c4b04bd25858b147a7ab0f46ade9551a6ed8cc69eeb727a15d1d66dc72998",
+  "coveredFiles": [
+    "docs/specs/desktop-live-reading.eli16.md",
+    "scripts/desktop-live-reading.mjs",
+    "upgrades/side-effects/desktop-live-reading-driver.md",
+    "dashboard/desktop.css",
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/desktop-speed-reading.eli16.md",
+    "docs/specs/desktop-speed-reading.md",
+    "tests/unit/desktop-feel-meter.test.ts",
+    "upgrades/next/desktop-speed-reading.md",
+    "upgrades/side-effects/desktop-speed-reading.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A standalone operator measurement script with no importer and no automatic run. This follow-up adds decoder counts and the server status read; independent second pass concurred.",
+  "eli16Path": "docs/specs/desktop-live-reading.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-live-reading-driver.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot operator-run measurement that ends with Stop; not a self-triggered loop"
+  }
+}
