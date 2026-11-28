@@ -208,6 +208,24 @@ describe('single-copy work and defects', () => {
     expect(defectsFor('m', 'M', [], { now, enabledSince: now - 3_600_000, lastCompletedPassAt: null })).toEqual([]);
   });
 
+  it('reports committed history and leaves dirty working files unmeasured', async () => {
+    const home = repo(path.join(userHome, 'metadata-only'));
+    fs.writeFileSync(path.join(home, 'README.md'), 'uncommitted edit');
+    const calls: string[] = [];
+    const result = await inspectRepo(home, (cwd, args, opts) => {
+      calls.push(args[0]);
+      return readGit(cwd, args, opts);
+    });
+    expect(result.state).toBe('ok');
+    expect(result.singleCopy.commits).toBe(1);
+    expect(result.uncommitted).toEqual({ worktrees: 0, files: 0, bytes: 0, oldestAt: null, complete: false });
+    expect(calls).toEqual(['rev-parse', 'remote', 'log', 'log', 'log']);
+    expect(await readGit(home, ['status', '--porcelain=v1'])).toEqual({
+      ok: false, error: 'git query is outside the owned repository inventory',
+    });
+    expect(await readGit(home, ['log', '--branches', '--not', '--patch', '--format=%H %ct'])).toMatchObject({ ok: false });
+  });
+
   it('inspect never throws on a non-repository; it answers unknown', async () => {
     const r = await inspectRepo(userHome, readGit);
     expect(r.state).toBe('unknown');

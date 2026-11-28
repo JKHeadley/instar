@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-26T15:36:41.956Z",
+  "slug": "owned-repo-metadata-only",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeGitExecutor.ts matches SafeGitExecutor (destructive-git funnel)"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 79,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/OwnedRepoReplicatedStore.ts",
+      "src/core/SafeGitExecutor.ts",
+      "src/monitoring/ownedRepos/OwnedRepoRegistry.ts",
+      "src/monitoring/ownedRepos/repoGit.ts",
+      "src/monitoring/ownedRepos/repoInspect.ts",
+      "src/server/ownedRepoRoutes.ts"
+    ],
+    "addedLines": 43,
+    "deletedLines": 36
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      3544
+    ],
+    "notes": "The registry treated the shared Git read tier as a sufficient safety boundary for unattended inspection of discovered repositories. Inventory now uses an explicit query boundary."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

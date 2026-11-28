@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "owned-repo-metadata-only",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T15:33:59.502Z",
+  "artifactPath": "upgrades/side-effects/owned-repo-metadata-only.md",
+  "artifactSha256": "a25fd9e8cf892ef671793de54725f9fffe1d90f121ceb53dac11687b03e89205",
+  "specPath": null,
+  "coveredFiles": [
+    "dashboard/console/repos-model.js",
+    "docs/specs/owned-repo-metadata-only.eli16.md",
+    "src/core/OwnedRepoReplicatedStore.ts",
+    "src/core/SafeGitExecutor.ts",
+    "src/monitoring/ownedRepos/OwnedRepoRegistry.ts",
+    "src/monitoring/ownedRepos/repoGit.ts",
+    "src/monitoring/ownedRepos/repoInspect.ts",
+    "src/server/ownedRepoRoutes.ts",
+    "tests/e2e/owned-repos-alive.test.ts",
+    "tests/integration/owned-repo-routes.test.ts",
+    "tests/unit/owned-repo-registry.test.ts",
+    "upgrades/next/owned-repo-metadata-only.md",
+    "upgrades/side-effects/owned-repo-metadata-only.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "This independently reviewed security patch only narrows the unattended inventory and admits a single disable-only value on the shared Git reader. It adds no permission, runtime toggle, or new active feature.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      3544
+    ],
+    "notes": "The registry treated the shared Git read tier as a sufficient safety boundary for unattended inspection of discovered repositories. Inventory now uses an explicit query boundary."
+  },
+  "eli16Path": "docs/specs/owned-repo-metadata-only.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owned-repo-metadata-only.md"
+}

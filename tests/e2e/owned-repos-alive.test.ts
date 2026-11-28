@@ -85,6 +85,7 @@ describe('owned-repository registry E2E', () => {
     expect(listed.class).toBe('owned');
     expect(listed.via).toBe('birth');
     expect(listed.hasOffMachineRemote).toBe(false);
+    expect(listed.uncommitted.complete).toBe(false);
     expect(res.body.repos.find((r: { path: string }) => r.path === home)?.class).toBe('owned');
     const pool = await request(server.getApp()).get('/repos?scope=pool').set({ Authorization: `Bearer ${AUTH}` });
     expect(pool.status).toBe(200);

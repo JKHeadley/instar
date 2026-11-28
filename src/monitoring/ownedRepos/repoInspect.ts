@@ -7,7 +7,7 @@
  *    anywhere else);
  *  - its single-copy work: commits on local branches that no off-machine remote-tracking
  *    ref reaches, the branches whose tip is one of them, and the oldest such commit;
- *  - its uncommitted work per worktree (counts, bytes, oldest change).
+ *  - the registered worktrees based on Git metadata. Uncommitted work is unmeasured.
  *
  * "Off this machine" in increment 1 means a remote as last fetched: the registry is
  * read-only, so it never fetches. A remote-tracking ref that is stale can only make
@@ -100,16 +100,14 @@ export function repoIdFor(rootCommit: string, homeRelativePath: string): string 
   return createHash('sha256').update(`${rootCommit}\u0000${homeRelativePath}`).digest('hex');
 }
 
-const MAX_STAT_PER_WORKTREE = 400;
-const MAX_WORKTREES = 200;
 const BRANCH_NAMES_KEPT = 20;
 
 /** Inspect a repository whose working root is `root`. Never throws. */
-export async function inspectRepo(root: string, git: GitReader, opts: { deadline?: number } = {}): Promise<RepoInspection> {
+export async function inspectRepo(root: string, git: GitReader): Promise<RepoInspection> {
   const out: RepoInspection = {
     root, commonDir: '', rootCommit: null, worktrees: [root], remotes: [],
     singleCopy: { commits: 0, branches: 0, oldestAt: null, branchNames: [] },
-    uncommitted: { worktrees: 0, files: 0, bytes: 0, oldestAt: null, complete: true },
+    uncommitted: { worktrees: 0, files: 0, bytes: 0, oldestAt: null, complete: false },
     state: 'ok',
   };
   const fail = (e: string) => { out.state = 'unknown'; out.error = e; return out; };
@@ -154,26 +152,5 @@ export async function inspectRepo(root: string, git: GitReader, opts: { deadline
   out.singleCopy.branches = branches.length;
   out.singleCopy.branchNames = branches.sort((a, b) => b.at - a.at).slice(0, BRANCH_NAMES_KEPT).map((b) => b.name.slice(0, 200));
 
-  // Uncommitted work, per worktree, bounded.
-  for (const w of out.worktrees.slice(0, MAX_WORKTREES)) {
-    if (opts.deadline && Date.now() > opts.deadline) { out.uncommitted.complete = false; break; }
-    if (!fs.existsSync(w)) continue;
-    const st = await git(w, ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], { timeoutMs: 60_000 });
-    if (!st.ok) { out.uncommitted.complete = false; continue; }
-    const entries = st.stdout.split('\0').filter(Boolean).filter((e) => /^.. /.test(e));
-    if (!entries.length) continue;
-    out.uncommitted.worktrees += 1;
-    out.uncommitted.files += entries.length;
-    for (const e of entries.slice(0, MAX_STAT_PER_WORKTREE)) {
-      try {
-        const s = await fs.promises.lstat(path.join(w, e.slice(3)));
-        if (s.isFile()) out.uncommitted.bytes += s.size;
-        const t = s.mtimeMs;
-        if (out.uncommitted.oldestAt === null || t < out.uncommitted.oldestAt) out.uncommitted.oldestAt = t;
-      } catch { /* @silent-fallback-ok — a deleted file has no size; it still counts as a change */ }
-    }
-    if (entries.length > MAX_STAT_PER_WORKTREE) out.uncommitted.complete = false;
-  }
-  if (out.worktrees.length > MAX_WORKTREES) out.uncommitted.complete = false;
   return out;
 }
