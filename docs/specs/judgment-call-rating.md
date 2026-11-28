@@ -2,7 +2,7 @@
 title: Judgment-call rating — log each judgment-bound call with its context where it is made, and rate it
 slug: judgment-call-rating
 tier: 2
-status: round 6 reviewed; final-round fixes applied, not stamped converged
+status: verification rounds in progress (CoS ruling (a)); not stamped converged
 author: echo (topic 33368, M5)
 countdown: STD-SUBCOUNTDOWN-judgment-call-rating (2026-12-21)
 spec-due: 2026-12-07
@@ -93,7 +93,7 @@ call.
   `freshestTrace`, its path and hash are recorded and `traceDiffers: true` (the grader then
   `excludes` the call from every question, because the record would otherwise mix two calls).
 - `artifact`: `{ path, hash, stagedHash }` from the trace's `artifactPath` (Tier 2+) or
-  `sideEffectsPath` (Tier 1): `hash` = `git hash-object` of the bytes the hook checked, `stagedHash` =
+  `sideEffectsPath` (Tier 1): `hash` = `git hash-object --path=<path>` of the bytes the hook checked, `stagedHash` =
   the staged blob's object id (`git rev-parse :<path>`). Every `stagedHash` in this spec means that
   object id. The existing sha checks are **not** changed, so no new refusal comes from this.
 - `spec`: `{ path, hash, stagedHash, staged }` from the trace's `specPath` when declared (none on
@@ -200,15 +200,20 @@ decided from recorded evidence rather than inferred from scope:
   the same `headCommit` — the same commit was attempted again (the usual cause is a check that runs
   after the gate in `.husky/pre-commit`, such as `check-rule3-coverage`, refusing the first
   attempt). Two successive real commits have different `headCommit` values and both stay calls.
-- **Not landed.** A pass record lands when some commit in the PR's history (from `refs/pull/<N>/head`)
-  makes, at every recorded path, the same transition the record describes: from `baseBlob` to
-  `stagedBlob`, a deletion counting as a transition to absent. A record with no matching commit (a
-  commit refused after the gate and never retried) is `not-landed`; a record whose PR history cannot
-  be fetched is `history-unavailable`. Both are counted separately and not rated.
+- **Record format first.** A record with `judgment.error` is `excluded` before any matching. A
+  legacy record (no `judgment` block) goes to the legacy path below. Only records with a `judgment`
+  block go through the landing check.
+- **Landing.** A call's **carrying commit** is the PR commit that introduced its record file. The
+  record lands when that commit, at every recorded path, makes the transition the record describes
+  (`baseBlob` → `stagedBlob`, a deletion counting as a transition to absent). If the carrying
+  commit's transition differs — an amend (the gate runs with `HEAD` at the commit being amended, so
+  the record describes B→C while the surviving commit makes A→C), or a refused attempt whose record
+  rode a later, different commit — the call is `transition-mismatch`: it is still rated in stage 2,
+  and the diff-dependent answers (stage 1 and the proportionality question) are
+  `insufficient-evidence`, rather than a small amend being judged as the whole call. A record whose
+  PR history cannot be fetched is `history-unavailable`, counted and not rated.
 
-An amend runs the gate with `HEAD` at the commit being amended, so its record describes the amend's
-own change; the amended-away base then does not resolve, and stage 1 is `insufficient-evidence`
-rather than judging the small amend as the whole call. Legacy records carry no `headCommit`, so for
+Legacy records carry no `headCommit`, so for
 them an earlier same-slug pass record is `superseded` only when a later one's scope contains it
 (13 of 111 on the 69 recent in-scope PRs), and the totals say this weaker rule was used. Records
 without `ts` (9 today) are counted `no-ts` and not rated. A PR is **covered** when its calls' scopes
@@ -221,7 +226,9 @@ hook's user-facing-surface branch; this spec names that drift and does not chang
 the coverage report uses the hook's rule, today's version, for every PR it reports.
 
 For each call, the grader reads the artifact and spec from the PR's landed tree. A document counts
-as the call's evidence only when the hook checked the same bytes it staged (`hash` equals
+as the call's evidence only when the hook checked the same content it staged: `hash` is taken with
+`git hash-object --path=<path>`, which applies the repository's line-ending normalization, so a
+CRLF checkout of an LF blob hashes equal while a real unstaged edit does not (`hash` equals
 `stagedHash`; otherwise `checked-differs-from-staged`) **and** the landed git object id equals
 `stagedHash` (git objects, so a checkout's line-ending conversion never reads as a difference): a differing artifact makes the review questions `insufficient-evidence`; a
 differing spec makes the standard question `insufficient-evidence`.
@@ -236,25 +243,28 @@ is `unmatched`, counted, and not rated.
 
 Fenced as data with a fresh per-call code (the SEC-097 nonce lesson):
 
-1. **Stage 1, tier and machinery** — `riskFloor`, `riskFloorReasons`, `perFileLines`, the tier
-   definitions from the instar-dev skill, and **that call's own diff**: rebuilt from each path's
+1. **Stage 1, tier** — the changed paths, `perFileLines`, the tier definitions from the instar-dev
+   skill, and **that call's own diff**: rebuilt from each path's
    `baseBlob` and `stagedBlob` in the record, read from the PR's head ref (`refs/pull/<N>/head`,
    fetched read-only from the public repository, at most one fetch per PR, because squash merges
    drop the intermediate blobs from main). A blob **resolves** only if it is reachable from that
    ref, not merely present in a local object store; a missing base on an added file or a missing
    staged blob on a deleted file means "absent", not "unresolvable". An unresolvable blob makes the
-   stage 1 answers `insufficient-evidence`, so a later call's edits to the same file are never shown
+   diff-dependent answers (stage 1 and the proportionality question) `insufficient-evidence`, so a later call's edits to the same file are never shown
    as this call's; unresolvable counts are reported in the totals.
    Legacy calls have no blob ids and use their scope's diff in the landed PR only when no other call
-   in the PR touches the same paths; otherwise stage 1 is `insufficient-evidence`. Bounded at
+   in the PR touches the same paths; otherwise the diff-dependent answers are `insufficient-evidence`. Bounded at
    60,000 characters (about 15,000 tokens: far inside either judge's context, and chosen to keep
    each call's prompt near 20,000 tokens so the weekly cost estimate below holds) with the cut
    disclosed; a cut diff makes the
-   stage 1 answers `insufficient-evidence`, never a verdict on part of a change. The diff excludes
+   diff-dependent answers `insufficient-evidence`, never a verdict on part of a change. The diff excludes
    `.instar/instar-dev-traces/`, `.instar/instar-dev-decisions/`, `upgrades/side-effects/` and
-   `docs/specs/`. **No tier reasoning and no artifact text.** Every rated call gets the same view,
+   `docs/specs/`. **No declared tier, no suggested tier, no `riskFloor` number or its reasons (the
+   gate's suggestion is `max(sizeTier, riskFloor)` and could be rebuilt from them), no tier
+   reasoning and no artifact text.** Every rated call gets the same view,
    so the calibration groups below see the same evidence.
-2. **Stage 2, the rest** — after the stage 1 answers are recorded: the tier reasoning, the artifact
+2. **Stage 2, the rest** — built only after the stage 1 answers are recorded: the whole stage 1
+   view, `declaredTier`, `riskFloor` and `riskFloorReasons`, the tier reasoning, the artifact
    text, the spec frontmatter (including `review-convergence`), the convergence report captured at
    gate time (`spec.convergenceReport`, never one added later in the PR), `secondPassStatus` labelled as the author's attestation, and
    the `headings` result.
@@ -282,7 +292,10 @@ it.
 
 Each question on each sampled call ends in exactly one disposition:
 
-- `agreed`: both families give the same code and echo the per-call code;
+- `agreed`: both families give the same code and echo the per-call code; for the tier question
+  agreement is on the **judges' proposed tier** (1, 2 or 3), and `right` / `too-low` / `too-high` are
+  derived from the agreed tier, so two judges proposing 2 and 3 against a declared 1 are
+  `disagreed`, not an agreed `too-low`;
 - `disagreed`: both answered validly, with different codes;
 - `insufficient-evidence`: both judges said so, **or** the grader forced it before asking (an
   unresolvable blob, a scrubbed or truncated input, a checked/staged or landed mismatch); the two
@@ -346,7 +359,7 @@ Each run publishes one document in the benchmark conversation (`POST /docs` with
 conversation) with the totals:
 denominators **by sampling group** (`belowFloor`, `random`, `cohort-catch-up`; outcome implication
 is a calibration attribute, reported there, not a sampling group), the coverage report and
-the counts of `superseded`, `not-landed`, `history-unavailable`, `checked-differs-from-staged`, `no-pr`, `no-ts`, `unmatched`, `incomplete`, `gave-up`,
+the counts of `superseded`, `transition-mismatch`, `history-unavailable`, `checked-differs-from-staged`, `no-pr`, `no-ts`, `unmatched`, `incomplete`, `gave-up`,
 unresolvable blobs and `judgment.error`, and the per-call ledger. It ends with a **manifest**: the main sha processed to, carried-over and retry ids,
 each group's last evaluable rate interval, and `status: published`.
 
@@ -378,7 +391,9 @@ for a re-date, so the countdown is never closed on records nobody has rated.
 | Validated trace differs from the record's trace | invariant; basis: enumerable-domain; evidence: two paths are equal or not | `traceDiffers: true`; the call is `excluded` from every question |
 | Required-heading match | invariant; basis: enumerable-domain; evidence: a fixed list from the hashed template the record names, with a fixed normalization | conditional headings never `missing` |
 | `secondPassStatus` mapping | invariant; basis: enumerable-domain; evidence: the table above covers every form found in the 2,972 tracked traces, with `unknown` for the rest | no finding from `not-done` alone |
-| Which records of a PR are rated | invariant; basis: enumerable-domain; evidence: every pass record the PR adds, minus retries (a later same-slug record with the same `headCommit`) and records whose staged blobs never appear in the PR | `superseded`, `not-landed` |
+| Which records of a PR are rated | invariant; basis: enumerable-domain; evidence: every pass record the PR adds, minus retries (a later same-slug record with the same `headCommit`) | `superseded`; errored records `excluded` |
+| Carrying commit's transition differs from the record | invariant; basis: enumerable-domain; evidence: two (base, staged) pairs per path are equal or not | `transition-mismatch`; diff-dependent answers `insufficient-evidence` |
+| Grader's tier comparison | invariant; basis: enumerable-domain; evidence: an agreed proposed tier is equal to, above or below the declared tier | `right`, `too-low`, `too-high` |
 | An answer pair that differs | invariant; basis: enumerable-domain; evidence: two valid codes are equal or not | `disagreed`; counts in the rate denominator, never a finding |
 | A call's own diff cannot be rebuilt | invariant; basis: enumerable-domain; evidence: each blob resolves or not | stage 1 `insufficient-evidence` |
 | Landed artifact or spec differs from the record | invariant; basis: enumerable-domain; evidence: two hashes are equal or not | dependent questions `insufficient-evidence` |
@@ -450,12 +465,14 @@ for a re-date, so the countdown is never closed on records nobody has rated.
    under the **same** slug yields two calls, each judged on its own diff; two successive commits with
    the same slug and the same paths yield two calls, while a retry of one commit (same `headCommit`)
    yields one; two calls that successively edit the same line show each call only its own edit; an
-   amended-away base gives stage 1 `insufficient-evidence`; a pass record whose commit never landed
-   is `not-landed`; a Windows-style checkout does not read as an artifact difference; a release commit counts
+   amend, and separately a refused attempt whose record rode a later commit, are `transition-mismatch`
+   with stage 1 and proportionality `insufficient-evidence`; a uniquely matched legacy record and an
+   errored record carried by a landed commit take their own paths (rebuilt view; `excluded`); a Windows-style checkout does not read as an artifact difference; a release commit counts
    `no-pr`; an artifact edited after the last gate run, and separately a spec-only edit, make the
    dependent questions `insufficient-evidence`; a legacy PR with two matching traces is `unmatched`.
 9. Stage 1's rendered prompt, with unique markers planted in a changed trace and artifact, contains
-   neither; no judge input contains later history; a planted injection call is excluded; a planted
+   neither, and contains no `declaredTier`, `suggestedTier`, `riskFloor` or `riskFloorReasons` value;
+   the stage 2 prompt is built only after the stage 1 answer is stored; no judge input contains later history; a planted injection call is excluded; a planted
    fake token never reaches a judge.
 10. With one family off, every call is `incomplete`, rates publish as `unavailable`, ids carry over,
     and the next run retries them and compares against the last evaluable interval.
@@ -468,7 +485,9 @@ for a re-date, so the countdown is never closed on records nobody has rated.
 12. Evidence eligibility: a fixture where the hook checked bytes A while B was staged and B landed is
     `checked-differs-from-staged`; a spec-only edit after the gate run is caught by `spec.stagedHash`;
     a convergence report added in a second commit of the PR does not make the first call `convergence-recorded`;
-    a refused attempt that only deleted a file is `not-landed`; an unfetchable PR history is
+    a refused attempt that only deleted a file, whose record rode the next commit, is
+    `transition-mismatch`; a CRLF checkout of an LF artifact is eligible while a real unstaged edit is
+    `checked-differs-from-staged`; an unfetchable PR history is
     `history-unavailable`.
 13. Each question's dispositions sum to the sampled calls, and every published rate shows its
     numerator and its `agreed + disagreed` denominator.

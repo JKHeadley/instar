@@ -35,8 +35,9 @@ different companies.
    retry of the very same commit, checked against the files that actually merged, and each judged
    only on its own part of the change.
 3. The two-judge grader built for the tone gate gets a second mode that grades these calls with six
-   questions: one per rule, plus whether the author was missing context the call needed. The judges first decide whether the risk level was right from what the
-   change actually touched, before they are shown the agent's reasons, so good writing cannot
+   questions: one per rule, plus whether the author was missing context the call needed. The judges first propose a risk level themselves, from what the change
+   actually touched, without seeing the level the agent declared, the check's suggestion or the
+   agent's reasons; the grader then compares, so good writing cannot
    rescue a wrong call. They are never shown what happened to the change later.
 4. Afterwards, the grader checks whether the calls the judges doubted were more often the ones that
    later got reverted or blamed for a bug. That is reported as a pattern with its counts, not as a
