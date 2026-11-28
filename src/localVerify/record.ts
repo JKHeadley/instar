@@ -41,6 +41,8 @@ export interface LocalVerifyRecord {
   /** The merge commit's tree SHA (from `git merge-tree --write-tree`); '' only on an `error` that stopped before it. */
   mergeTree: string;
   lanes: LaneTotals[];
+  /** Observational exact-file inventory coverage, including stopped lanes; never a verdict authority. */
+  inventoryCoverage?: { expectedFiles: number; reportedFiles: number; complete: boolean };
   nodeVersion: string;
   machineId: string;
   startedAt: string;

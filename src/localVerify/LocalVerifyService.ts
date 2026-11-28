@@ -49,6 +49,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { exitSeenPath, MERGE_HANDOFF_RESTART_HOLD_MS, mergeHoldPath, PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
+import { ThroughputMetrics } from './throughputMetrics.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type FlakyRetry, type LocalVerifyRecord } from './record.js';
 import { PreflightReplayStore, replayKey, type PreflightReplay } from './preflightReplay.js';
 import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator.js';
@@ -1087,6 +1088,7 @@ export class LocalVerifyService {
   private queueControlsEnabled: (() => boolean) | null = null;
   /** The operator's holds and front marks, per PR number. ONE object: admission, the start check and the dispatch check all read it. */
   private readonly operator: OperatorQueueStore;
+  private readonly throughputMetrics: ThroughputMetrics;
   private operatorLoadReported = false;
   private operatorCheckAt = 0;
   private operatorTicking = false;
@@ -1117,6 +1119,7 @@ export class LocalVerifyService {
     this.health.load(); // the watermark decides from the start (boot() re-reads it)
     // The age of the oldest unverified merge is restored once, here (it used to start again at every boot).
     this.mainObs.oldestUnverifiedAt = this.health.unverifiedAge().oldestUnverifiedAt;
+    this.throughputMetrics = new ThroughputMetrics(path.join(this.lvStateDir, 'throughput-metrics.json'), this.now, (e) => this.audit(e));
     this.waiting = new WaitingList(path.join(this.lvStateDir, 'waiting.json'), this.now, (e) => this.audit(e));
     this.likelyFailing = new LikelyFailingStore(path.join(this.lvStateDir, 'likely-failing.json'), this.now, (e) => this.audit(e));
     this.firstPartGroups = new FirstPartGroups(path.join(this.lvStateDir, 'first-part-groups.json'), this.now, (e) => this.audit(e), () => (seams.random ? seams.random() : Math.random()));
@@ -1949,7 +1952,10 @@ export class LocalVerifyService {
       if (f.entry.headSha !== headSha || f.entry.baseRefName !== baseRefName) {
         this.cancelInFlight('head-moved');
         keptPlace = { index: 0, firstQueuedAt: f.entry.firstQueuedAt, pausedMs: f.entry.pausedMs, starvedRaised: f.entry.starvedRaised, resumeFirst: f.entry.resumeFirst, firstRefusedAt: f.entry.firstRefusedAt };
-      } else if (!f.cancelled) return { ok: true, status: 'in-flight' };
+      } else if (!f.cancelled) {
+        if (f.entry.baseSha === baseSha) this.throughputMetrics.observe({ repo: this.cfg.repo, ...f.entry }, 'requestedAt');
+        return { ok: true, status: 'in-flight' };
+      }
     }
     const pendingIdx = this.queue.findIndex((e) => e.pr === pr);
     if (pendingIdx >= 0) {
@@ -1968,6 +1974,7 @@ export class LocalVerifyService {
         e.text = prText;
         this.persistQueue();
         this.pump(); // a renamed PR may now be a repair candidate
+        if (e.baseSha === baseSha) this.throughputMetrics.observe({ repo: this.cfg.repo, ...e }, 'requestedAt');
         return { ok: true, status: 'already-queued', position: pendingIdx, ...this.holdFor(pr) };
       }
       // A new head abandons any peer attempt for the old one (its result can no longer be imported).
@@ -1998,6 +2005,8 @@ export class LocalVerifyService {
         return this.recordedAnswer(pr, existing);
       }
     }
+
+    this.throughputMetrics.observe({ repo: this.cfg.repo, pr, headSha, baseSha, baseRefName }, 'requestedAt');
 
     // Execution dedupe: identical merge inputs already verified under this policy.
     const exec = this.execIndex.get(executionKey(headSha, baseSha));
@@ -2079,6 +2088,7 @@ export class LocalVerifyService {
     };
     if (keptPlace && keptPlace.index < this.queue.length) this.queue.splice(keptPlace.index, 0, entry);
     else this.queue.push(entry);
+    this.throughputMetrics.observe({ repo: this.cfg.repo, ...entry }, 'admittedAt');
     // The first-part trial's assignment is drawn once, here, when the pull request is first queued.
     this.firstPartGroups.assign(pr);
     if (operatorOverCap && operatorAdmit) {
@@ -3222,6 +3232,7 @@ export class LocalVerifyService {
           const curHead = this.mainObs.head;
           this.mainRunOnCurrentHead = curHead !== null && (entry.headSha === curHead || this.releaseAlias.get(curHead) === entry.headSha) ? entry.headSha : null;
         }
+        if (entry.kind !== 'main') this.throughputMetrics.observe({ repo: this.cfg.repo, ...entry }, 'dispatchedAt');
         const ans = await client.run(peer, req).catch(() => null);
         if (trial && ans && !ans.ok) finishDelivery(this.cfg.stateDir, marker.attemptId);
         if (entry.remote !== marker) continue; // abandoned meanwhile
@@ -4678,6 +4689,7 @@ export class LocalVerifyService {
     });
     this.writeInFlight(intent);
     this.persistQueue();
+    if (entry.kind !== 'main') this.throughputMetrics.observe({ repo: this.cfg.repo, ...entry }, 'dispatchedAt');
     this.audit({ event: 'started', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, pgid: handle.pid, attempt: entry.attempts,
       ...(entry.firstRefusedAt !== undefined ? { firstRefusedAt: entry.firstRefusedAt } : {}) });
     if (entry.kind === 'main' && !entry.peerAttempt) this.notifyMainRunObserver('start', { headSha: entry.headSha, runToken: token, startedAt: intent.startedAt });
@@ -5228,6 +5240,7 @@ export class LocalVerifyService {
     fs.appendFileSync(this.journalPath, JSON.stringify(line) + '\n'); /* state-registry: local-verify-journal */
     const key = recordKey(record.repo, record.pr, record.headSha, record.baseRefName);
     this.index.set(key, record);
+    this.throughputMetrics.verdict(record, source);
     if (!enforcedRed) {
       const replay = this.preflightReplays?.get(replayKey(record));
       if (replay?.state === 'running') {

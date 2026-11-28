@@ -3362,6 +3362,25 @@
       }
     },
     {
+      "category": "local-verify-throughput-metrics",
+      "description": "Metadata-only first observed published head, request, admission, dispatch and verdict timings keyed by exact repo/PR/head/base. Observability only; cannot affect decisions. Actual GitHub publication time is unavailable and latency is explicitly a lower bound. Machine-local so each coordinator measures its own observation timeline, not replicated as authority.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/throughput-metrics.json",
+        "state/local-verify/throughput-metrics.json.tmp"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "whole-sync",
+        "complianceHold": false,
+        "note": "At most2000 exact-key rows, eight verdicts per row,30days since observation and4MB total. Rebuilt in memory on first use; missing/unreadable emits metadata-only degradation and never gates work."
+      }
+    },
+    {
       "category": "throwaway-owner-chat",
       "description": "The stand-in owner chat of a throwaway test agent (docs/specs/throwaway-owner-chat.md): the log of owner-chat messages, taps and commands, and its state file (first build, adopted owner-record genesis, shut-off record). Exists only on a single-machine throwaway in a temporary folder with no owner; never replicated, synced or backed up, and its presence refuses machine pairing for the life of the home.",
       "scope": "machine-local",
