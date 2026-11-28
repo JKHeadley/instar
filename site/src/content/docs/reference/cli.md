@@ -250,6 +250,19 @@ instar wakeup [machine]         # Wake a paired machine (where supported)
 instar leave                    # Remove this machine from the multi-machine cluster
 ```
 
+## Mobile pairing
+
+Agents whose owner phones may add this agent with one Face ID tap. Edits `mobilePairing.ownerIntroducers` in the agent's own `.instar/config.json`; restart the agent after a change.
+
+```bash
+instar mobile introducer show [--json]               # Print this agent's own introducer entry, to add to an agent it creates
+instar mobile introducer add --name <n> --key <key>  # Trust an introducer's owner phones on this agent
+instar mobile introducer remove --key <key>          # Stop trusting an introducer
+instar mobile introducer list                        # List the introducers this agent trusts
+```
+
+All four take `--dir <path>` for an agent directory other than the detected one.
+
 ## Workspace and worktrees
 
 ```bash
@@ -278,8 +291,6 @@ instar dev:post-drive-transcript-audit --topic <id> --start <time> --end <time>
 instar dev:profile-node [pid]   # CPU-profile a running node process (SIGUSR1 + inspector + CDP) and print its hottest JS functions
 instar dev:claim-check [paths...] --keywords <words...>
                                 # Before a build: list open and recently merged PRs touching those paths, and specs matching the keywords
-instar mobile introducer show|add|remove|list
-                                # Choose which agents' owner phones may add this agent with Face ID
 instar jobMigrate               # Migrate jobs between schema versions
 instar ledgerCleanup            # Token ledger cleanup
 instar memoryBackfillEvidence   # Backfill evidence rows into the memory index

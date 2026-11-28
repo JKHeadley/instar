@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "docs-coverage-spaced-subcommand",
+  "sessionId": "0d9e7223-d1c0-4963-9e7f-0b1d5dc858e7",
+  "timestamp": "2026-11-27T13:46:09.536Z",
+  "artifactPath": "upgrades/side-effects/docs-coverage-spaced-subcommand.md",
+  "artifactSha256": "3a797a4037aa8de741ac61ba9255a9e0e6e940e7a9c748f58504bd95b1f4cab3",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-07T04-04-09-806Z-docs-coverage-spaced-subcommand.json",
+    "scripts/docs-coverage.mjs",
+    "site/src/content/docs/reference/cli.md",
+    "tests/unit/scripts/docs-coverage.test.ts",
+    "upgrades/eli16/docs-coverage-spaced-subcommand.md",
+    "upgrades/next/docs-coverage-spaced-subcommand.md",
+    "upgrades/side-effects/docs-coverage-spaced-subcommand.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Docs Coverage CI scanner gains an exact nested-path spaced needle read from src/cli.ts, with a regression test and a CLI reference section. No runtime or shipped-package code changes.",
+  "eli16Path": "upgrades/eli16/docs-coverage-spaced-subcommand.md",
+  "sideEffectsPath": "upgrades/side-effects/docs-coverage-spaced-subcommand.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
