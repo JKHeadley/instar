@@ -85,7 +85,8 @@ describe('POST /email/send-to-owner with the outbound check', () => {
     expect(first.status).toBe(422);
     expect(first.body.error).toBe('tone-gate-advisory');
     expect(h.submitted).toHaveLength(0);
-    expect(h.prompts[0]).toContain('Report\n\nsee src/foo.ts');
+    // The gate renders the candidate JSON-encoded: subject and text joined by a blank line.
+    expect(h.prompts[0]).toContain(JSON.stringify('Report\n\nsee src/foo.ts'));
     const second = await h.send({ subject: 'Report', text: 'see src/foo.ts', metadata: { toneAdvisoryAck: 'B2_FILE_PATH', toneAdvisoryAckReason: REASON } });
     expect(second.status).toBe(200);
     expect(h.submitted).toHaveLength(1);
