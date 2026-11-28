@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "threadline-read-classification",
+  "sessionId": "a7b7b861-6a3f-44a5-9226-aa4007f0ce75",
+  "timestamp": "2026-11-28T02:23:59.193Z",
+  "artifactPath": "upgrades/side-effects/threadline-read-classification.md",
+  "artifactSha256": "23d02f586a82f1b267cfd2a12f26208397ad7cc62778025f56ad1e5f9960adf5",
+  "coveredFiles": [
+    "src/data/effect-kinds.ts",
+    "tests/e2e/trust-account-path-alive.test.ts",
+    "tests/unit/trust-journey-governed-effects.test.ts",
+    "upgrades/next/threadline-read-classification.md",
+    "upgrades/side-effects/threadline-read-classification.md",
+    "upgrades/threadline-read-classification.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Exact classification of six existing lookup tools preserves all mutation admission.",
+  "eli16Path": "upgrades/threadline-read-classification.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/threadline-read-classification.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
