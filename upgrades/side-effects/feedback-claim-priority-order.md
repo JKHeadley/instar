@@ -33,3 +33,19 @@ The purpose the operator set is to work the highest-priority issues first. The C
 - priority comparison is case-insensitive.
 
 The existing "oldest first when rows are enqueued in the same clock tick" case, with equal priority and report count, still passes. Results: tsc exit 0; the feedback drain and promotion unit files pass; `feedback-drain-backup-restore` integration passes; all 26 ratchet files pass.
+
+## Second-pass review
+
+**Reviewer:** echo-pipeline-strategy (Pipeline Strategy session, independent and read-only; it ran no tests)
+
+- **2026-11-27 11:27 PT, commit b46cf1526ef806186f8569c96317efef9ae469ae: CONCUR.**
+  - The approved set equals the claimed set: `claimNext` with `onlyWorkIds` still restricts claiming to the approved ids, and `claimableWork` uses the same `WORK_CLAIM_ORDER`. The promotion hash sorts ids before hashing, so it depends on the set, not the order. `outstandingApprovedWork` is a set filter and is unaffected.
+  - No starvation beyond windows while high-priority work is due: retryable items keep their backoff gate and dead-letter after their attempts.
+  - No other dependency on the old order: `oldestQueuedAgeMs` uses `MIN(created_at)`, and `simulateClaims` keeps its own order.
+  - This note is accurate on every point checked. Within high priority, `report_count DESC` can move a fast-growing item ahead of an older one, which is intended.
+- **2026-11-27 22:38 PT, staged main-merge tree d341d05417dc5febad58ecd040e19f72db2bc704 (committed as 4146eea524): CONCUR.**
+  - Exactly the 7 PR paths differ from main 482a94b9, each identical to b46cf1526e.
+  - The release note is at `upgrades/next/feedback-claim-priority-order.md` with no root copy.
+  - The src and tests changes against main are byte-identical to b46cf1526e's against its base, with matching patch ids.
+  - No shipped upgrades guide differs from main.
+  - Review file: `.instar/state/handoffs/reviews/second-pass/echo-pipeline-strategy-4014-main-merge.md` (agent home).
