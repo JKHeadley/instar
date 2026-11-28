@@ -60,3 +60,9 @@ Revert the code and release a patch. No migration or data cleanup. The old blank
 ## Conclusion
 
 The scoped source repair is supported by genuine original-code REDs, expanded DOM/state tests, real signed-client compatibility checks, existing HTTP/lifecycle contracts and normal browser sample-data proof. Complete suites and publication remain Chief/throughput responsibilities. Independent history-state and composer repairs must be preserved when integrating the shared chats.js file.
+
+## Second-pass review
+
+**Reviewer:** echo-pipeline-strategy independent second-pass reader (Pipeline Strategy session, independent of the author), 2026-11-28
+
+The reader concurred on staged tree cf6440912bc5852855e79cc8316458750e509d87 against main 7a929eeb35. The review covered all ten paths, including the full protected audit at docs/audits/chat-list-read-states.md, the view and browser-device changes, the two test files, and the release and side-effects records. The reader confirmed the noted behavior is present in the code, the pending fragment is in upgrades/next, and shipped guides are unchanged.
