@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "maturation-dated-owner-lint",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T03:22:21.511Z",
+  "artifactPath": "upgrades/side-effects/maturation-dated-owner-lint.md",
+  "artifactSha256": "4cd0d80a6062faca7d9b3f1edc0b20fdafb8843c5367b495b87914b87c3fe670",
+  "coveredFiles": [
+    "docs/specs/maturation-dated-owner-lint.eli16.md",
+    "package.json",
+    "scripts/lint-maturation-dated-owner.mjs",
+    "src/data/feature-ladders.json",
+    "src/monitoring/MaturationLadder.ts",
+    "tests/unit/lint-maturation-dated-owner.test.ts",
+    "upgrades/next/maturation-dated-owner-lint.md",
+    "upgrades/side-effects/maturation-dated-owner-lint.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Optional parser fields plus a build lint and the seeded owner/date data for 231 dark rungs, with its release note; a revert undoes it; second pass required because the lint can fail commits, and the reader concurred before this trace",
+  "eli16Path": "docs/specs/maturation-dated-owner-lint.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-dated-owner-lint.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
