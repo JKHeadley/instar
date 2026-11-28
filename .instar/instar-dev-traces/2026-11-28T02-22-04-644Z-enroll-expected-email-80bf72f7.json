@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "enroll-expected-email",
+  "sessionId": "05495e3f-bf2b-44d8-bd9c-039e1afdbbdc",
+  "timestamp": "2026-11-28T02:22:04.644Z",
+  "artifactPath": "upgrades/side-effects/enroll-expected-email.md",
+  "artifactSha256": "34d695871845d65208fe5f308dfe86c83711c8c28d3ca70931118f45feab4141",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "tests/integration/subscription-enrollment-routes.test.ts",
+    "upgrades/next/enroll-expected-email.md",
+    "upgrades/side-effects/enroll-expected-email.eli16.md",
+    "upgrades/side-effects/enroll-expected-email.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One route defaults an input to the account's recorded email and refuses a mismatch; a revert undoes it, no state migration",
+  "eli16Path": "upgrades/side-effects/enroll-expected-email.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/enroll-expected-email.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

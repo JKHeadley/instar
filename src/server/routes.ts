@@ -44345,13 +44345,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: false, started: false, reason: 'enrollment wizard not configured' });
       return;
     }
-    const { id, label, provider, framework, kind, configHome } = req.body ?? {};
+    const { id, label, provider, framework, kind, configHome, expectedEmail: rawExpectedEmail } = req.body ?? {};
     if (!id || !label || !provider || !framework) {
       res.status(400).json({ error: 'id, label, provider, and framework are required' });
       return;
     }
+    // The completed login is checked against an expected email. A login started by hand
+    // (no expectedEmail in the body) used to carry none, so its completion was always held
+    // as missing-expected-email even when it signed in as the right account (CMT-059). The
+    // account's recorded email is the default; a different one for an existing account is
+    // refused, so a caller cannot point a known account's login at another identity.
+    if (rawExpectedEmail !== undefined && (typeof rawExpectedEmail !== 'string' || rawExpectedEmail.length > 320)) {
+      res.status(400).json({ error: 'expectedEmail must be a string' });
+      return;
+    }
+    const recordedEmail = (() => {
+      const acct = typeof id === 'string' ? ctx.subscriptionPool?.get?.(id) : null;
+      return acct && typeof acct.email === 'string' && acct.email.trim() ? acct.email.trim() : undefined;
+    })();
+    const givenEmail = typeof rawExpectedEmail === 'string' && rawExpectedEmail.trim() ? rawExpectedEmail.trim() : undefined;
+    if (givenEmail && recordedEmail && givenEmail.toLowerCase() !== recordedEmail.toLowerCase()) {
+      res.status(409).json({ error: 'expected-email-mismatch', message: 'expectedEmail differs from the account email on record' });
+      return;
+    }
+    const expectedEmail = givenEmail ?? recordedEmail;
     try {
-      const login = await ctx.enrollmentWizard.start({ id, label, provider, framework, kind, configHome });
+      const login = await ctx.enrollmentWizard.start({ id, label, provider, framework, kind, configHome, ...(expectedEmail ? { expectedEmail } : {}) });
       res.status(201).json({ enabled: true, login: publicPendingLogin(login) });
     } catch (err) {
       // WS5.2 R6b — a DRIVE failure is honest + retry-able (502), NOT an opaque 500.
