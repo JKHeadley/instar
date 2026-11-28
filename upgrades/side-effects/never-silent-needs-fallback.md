@@ -34,7 +34,11 @@ Revert the commit: no item is raised and the watcher only retries, as after step
 
 ## Class-Closure Declaration
 
-unbounded-self-action: n/a. The watcher raises a notice (an attention item) by itself, but it is bounded and settles: one item per incident and notice kind per failure streak (stable id, deduped by the attention queue and by `raisedNeeds`), raised only from a failed notice try, and those tries are already backed off by step 2 (30 s doubling to 15 minutes). A failed raise is retried only on the next such try, never in a loop of its own. It closes once, on delivery, on the incident closing, or by the lifecycle resolver.
+unbounded-self-action: guard, covered by the existing registered controller `never-silent-conversation-recovery` (src/testing/selfActionRegistry.ts), whose convergence model already counts the watcher's notices as `notify` self-actions and is proven by tests/unit/self-action-convergence.test.ts. The new raise is another notify from the same controller and the same sweep, and it is bounded: one item per incident and notice kind per failure streak (stable id, deduped by the attention queue and by `raisedNeeds`), raised only from a failed notice try, and those tries are already backed off by step 2 (30 s doubling to 15 minutes). A failed raise is retried only on the next such try, never in a loop of its own. It closes once, on delivery, on the incident closing, or by the lifecycle resolver.
+
+Restart: the registry entry's reset-safe reason names the durable store, but this action's state (`raisedNeeds`, `noticeRetry`) is in memory. A restart is safe for it for a different reason: a re-raise after a restart is an idempotent update of the same open row (same id, record only, no post), so it adds no row and sends nothing. The convergence model itself is not extended in this step (the reviewer's optional suggestion); the bound above rests on the unit tests in tests/unit/neverSilent-watcher.test.ts.
+
+Third look (same reviewer, 2026-11-28 08:16 PT): CONCUR WITH CHANGES on the first wording ("n/a"); this section is the change it asked for.
 
 ## Framework generality
 
