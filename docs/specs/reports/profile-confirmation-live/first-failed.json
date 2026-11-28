@@ -1,0 +1,110 @@
+{
+  "artifact": {
+    "createdAt": "2026-11-22T22:20:57.554Z",
+    "featureId": "profile-confirmation-clarity",
+    "riskCategories": [
+      "happy-path",
+      "regression",
+      "lifecycle",
+      "concurrency"
+    ],
+    "runId": "first-live-run-failed-20261122",
+    "runnerFingerprint": "real-user-browser-to-real-demo-poller:8e8cd9f2c8224c683771c30c198db4a9a084e4a0903b26dd96009644ae5606cc",
+    "scenarios": [
+      {
+        "description": "An exact native yes applies the displayed target change",
+        "evidence": {
+          "candidate": "dbb62f11c2122a757009f38cd5cf0698c40ef03c",
+          "channelId": "139",
+          "group": "Instar demo (live tests)",
+          "messageIds": [
+            "155",
+            "159"
+          ],
+          "observedApplied": false
+        },
+        "id": "exact-yes",
+        "riskCategory": "happy-path",
+        "surface": "telegram",
+        "verdict": "FAIL"
+      },
+      {
+        "description": "Numbered yes applies nothing and receives one plain reminder",
+        "evidence": {
+          "candidate": "dbb62f11c2122a757009f38cd5cf0698c40ef03c",
+          "channelId": "139",
+          "group": "Instar demo (live tests)",
+          "messageIds": [
+            "156",
+            "157",
+            "158"
+          ],
+          "observed": "No target changed; actual session-delivery failure rather than a reminder"
+        },
+        "id": "numbered-yes-reminder",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "FAIL"
+      },
+      {
+        "description": "An agent message between question and exact reply does not cancel the request",
+        "evidence": {
+          "candidate": "dbb62f11c2122a757009f38cd5cf0698c40ef03c",
+          "channelId": "139",
+          "group": "Instar demo (live tests)",
+          "messageIds": [
+            "155",
+            "158",
+            "159",
+            "160"
+          ],
+          "observed": "Exact reply did not apply; cannot certify survival from final settings"
+        },
+        "id": "agent-message-survival",
+        "riskCategory": "lifecycle",
+        "surface": "telegram",
+        "verdict": "FAIL"
+      },
+      {
+        "description": "Two pending requests resolve independently",
+        "evidence": {
+          "candidate": "dbb62f11c2122a757009f38cd5cf0698c40ef03c",
+          "channelId": "139",
+          "group": "Instar demo (live tests)",
+          "messageIds": [
+            "155",
+            "156",
+            "159"
+          ],
+          "observed": "Both questions delivered; neither target changed before process teardown"
+        },
+        "id": "two-independent-pending",
+        "riskCategory": "concurrency",
+        "surface": "telegram",
+        "verdict": "FAIL"
+      }
+    ],
+    "surfaces": [
+      "telegram"
+    ]
+  },
+  "entry": {
+    "featureId": "profile-confirmation-clarity",
+    "runId": "first-live-run-failed-20261122",
+    "contentHash": "10579b687191333bc8907c9a5391aa186d30c3ff10a43e451162ebcf8b30c40f",
+    "signature": "1AkzggBNiY14E16CcNgD5F7m89HYTad3YF9Bf4AuHgecANOA0rikYaQz8jcCMSwLlSSxKGxHLZxITLCO2sDzCg==",
+    "signerFingerprint": "8e8cd9f2c8224c683771c30c198db4a9a084e4a0903b26dd96009644ae5606cc",
+    "surfaces": [
+      "telegram"
+    ],
+    "riskCategories": [
+      "happy-path",
+      "regression",
+      "lifecycle",
+      "concurrency"
+    ],
+    "createdAt": "2026-11-22T22:20:57.554Z",
+    "prevEntryHash": null
+  },
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAZJcN3UPnOItRnc8bm9kCKOJM+Xg+aeZodCRRT35i4m4=\n-----END PUBLIC KEY-----\n"
+}

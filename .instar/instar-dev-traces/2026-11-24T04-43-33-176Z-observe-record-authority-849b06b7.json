@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "slug": "observe-record-authority",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T04:43:33.176Z",
+  "artifactPath": "upgrades/side-effects/observe-record-authority.md",
+  "artifactSha256": "a3d3d432f654c9783b03b9f69208ef12509359c86497d90b124bd238cf1a37e2",
+  "specPath": "docs/specs/canonical-records-and-work-discovery.md",
+  "coveredFiles": [
+    "docs/specs/STATE-COHERENCE-REGISTRY.md",
+    "scripts/lib/state-authority-census.mjs",
+    "scripts/lint-state-registry.js",
+    "src/data/state-coherence-registry.json",
+    "tests/unit/lint-state-registry.test.ts",
+    "tests/unit/state-authority-census.test.ts",
+    "upgrades/next/observe-record-authority.md",
+    "upgrades/side-effects/observe-record-authority.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The census changes a checked repository ownership contract and write-path lint. Runtime stores remain in observe mode.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "capped",
+        "verified": false,
+        "iterations": 6
+      },
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/canonical-records-and-work-discovery-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

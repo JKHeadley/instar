@@ -1,0 +1,19 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The standards back-reference check now covers decision infrastructure (files named as guards, gates, sentinels and similar, plus lint checks and hooks), not only the files the standards registry cites. Existing gaps are recorded in a shrink-only baseline, and new files must name the standard they enforce. This is a repository development check only; agents' runtime behaviour does not change.
+
+## What to Tell Your User
+
+Nothing; this only affects how Instar itself is developed.
+
+## Summary of New Capabilities
+
+None at runtime.
+
+## Evidence
+
+Six new tests in tests/unit/lint-standard-code-backreference.test.ts, 16 of 16 passing. On the real tree, the check covers 289 more files: 21 already compliant and 268 baselined.

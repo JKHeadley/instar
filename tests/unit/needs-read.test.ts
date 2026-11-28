@@ -221,7 +221,7 @@ describe('needs read: the owner', () => {
     const a = await composer({ '/trust/requests': { status: 200, body: { requests: [pending, { ...pending, requestId: 'old', expiresAt: iso(-1) }, { ...pending, requestId: 'closed', status: 'consumed' }], approvalDelivery: { state: 'accepted', message: 'Review this in Changes to approve in Instar.' } } } }).owner();
     expect(a.items.filter(i => i.source === 'trust-requests')).toHaveLength(1);
     expect(a.items.find(i => i.source === 'trust-requests')).toMatchObject({ id: 'need:trust:tr-board-policy',
-      title: 'Review how the agent starts work cards', action: { kind: 'href', href: '#/settings/allowed?s=approvals' } });
+      title: 'Review how the agent starts work cards', action: { kind: 'href', href: '#/settings/allowed?s=approvals&request=tr-board-policy' } });
     expect(a.items.find(i => i.source === 'trust-requests')!.why).toContain('unconfirmed');
     expect(a.sources.find(i => i.id === 'trust-requests')).toMatchObject({ posture: 'replicated', state: 'ok' });
   });
