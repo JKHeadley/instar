@@ -25,6 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
+import { scrubForStore, scrubJsonValueForStore } from '../core/durableSecretScrub.js';
 import { scrubSecrets } from '../monitoring/scrubSecrets.js';
 
 export const SUPERVISION_INPUT_CLAMP_CHARS = 60_000;
@@ -179,7 +180,7 @@ export class ScriptJobSupervisor {
     let used = 0;
     for (const row of rows) {
       const machineId = row.machineId ?? this.d.machineId;
-      const json = scrubSecrets(JSON.stringify({
+      const json = JSON.stringify(scrubJsonValueForStore({
         slug: row.slug,
         machineId,
         machine: row.machineNickname,
@@ -188,9 +189,11 @@ export class ScriptJobSupervisor {
         lastResult: row.state?.lastResult,
         consecutiveFailures: row.state?.consecutiveFailures,
         lastRun: row.state?.lastRun,
-        recentOutputs: (row.recentOutputs ?? []).slice(0, 3).map(o => String(o).slice(0, 1000)),
+        recentOutputs: (row.recentOutputs ?? []).slice(0, 3).map(output =>
+          scrubSecrets(scrubForStore(String(output)).text).slice(0, 1000),
+        ),
         triage: row.triage ?? null,
-      }));
+      }, scrubSecrets));
       if (used + json.length + 1 > SUPERVISION_INPUT_CLAMP_CHARS) {
         result.notReviewedToday.push({ slug: row.slug, machineId, why: 'over the daily review size limit' });
         continue;

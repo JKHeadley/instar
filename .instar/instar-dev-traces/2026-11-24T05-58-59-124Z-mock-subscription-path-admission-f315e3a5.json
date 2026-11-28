@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "mock-subscription-path-admission",
+  "sessionId": "d4b9743a-b9a5-4e03-a043-7d2490322b08",
+  "timestamp": "2026-11-24T05:58:59.124Z",
+  "artifactPath": "upgrades/side-effects/mock-subscription-path-admission.md",
+  "artifactSha256": "8e4ca7c0086e2d348c766ce91f902537633c58444b8057a20cd9165347c3fdd6",
+  "coveredFiles": [
+    "docs/specs/mock-subscription-path-admission.eli16.md",
+    "tests/unit/intelligence-provider-factory-subscription-path.test.ts",
+    "upgrades/next/mock-subscription-path-admission.md",
+    "upgrades/side-effects/mock-subscription-path-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One mocked subscription routing fixture isolates the default holder path and restores process state. All five original cases passed; production and native subprocess tests keep their existing admission rules.",
+  "eli16Path": "docs/specs/mock-subscription-path-admission.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mock-subscription-path-admission.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -22,7 +22,7 @@ import { checkTrustProfileAgainstLog, TrustChangeLogWriter, type Narrowed } from
 import { decideAdmission, type AdmissionDecision } from './admission.js';
 import { TrustOutcomeLog } from './TrustOutcomeLog.js';
 import { planLegacyImport, writeLegacyKindsFile } from './legacyImport.js';
-import { deriveEffect, type DerivedEffect } from '../../data/effect-kinds.js';
+import { deriveEffect, requiresOwnerProofForSameLevelGrant, standingGrantRepositories, trustGrantProofSubject, type DerivedEffect } from '../../data/effect-kinds.js';
 import type { AdapterKind, Receipt } from './accountPath.js';
 
 /** The journal-backed sink: every record goes through the replicated emitter and is awaited durable. */
@@ -102,7 +102,12 @@ export function summarizeChange(change: TrustChange, raises: string[] = []): str
   switch (change.kind) {
     case 'trust-grant': {
       const words: Record<string, string> = { blocked: 'never do it', 'approve-always': 'ask you first every time', 'approve-first': 'ask you first', log: 'do it and keep it in your record', autonomous: 'just do it' };
-      return [...widen, `Change: ${change.operation} actions on ${q(change.service)}: ${words[change.level] ?? change.level}`];
+      const repositories = standingGrantRepositories(change.service, change.operation);
+      return [
+        ...widen,
+        `Change: ${change.operation} actions on ${q(change.service)}: ${words[change.level] ?? change.level}`,
+        ...(repositories.length ? [`Standing GitHub pull request permission is limited to ${repositories.join(', ')}.`] : []),
+      ];
     }
     case 'autonomy-profile': return [...widen, `Change: switch the autonomy profile from ${change.from} to ${change.to}`];
     case 'trust-recovery': return [...widen, `Change: restore the trust level that incident ${q(change.incidentId)} lowered`];
@@ -159,7 +164,8 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       case 'trust-grant': {
         if (!d.adaptiveTrust || !isKnownTrustLevel(c.level)) return [];
         const cur = d.adaptiveTrust.getTrustLevel(c.service, c.operation).level;
-        return isTrustLevelRaise(cur, c.level as TrustLevel) ? [`${c.service} ${c.operation}: ${cur} → ${c.level}`] : [];
+        return (isTrustLevelRaise(cur, c.level as TrustLevel)
+          || (cur === c.level && requiresOwnerProofForSameLevelGrant(c.service, c.operation, c.level))) ? [`${c.service} ${c.operation}: ${cur} → ${c.level}`] : [];
       }
       case 'autonomy-profile': {
         const cur = currentProfile();
@@ -329,12 +335,32 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
       const self = d.machineId ?? 'self';
       const decision = decideAdmission({
         effect,
-        unchangedLegacy: (kind) => store.legacyUnchanged(kind, self),
+        unchangedLegacy: (kind) => {
+          if (effect?.floor.length) return false;
+          // The PR create action used the legacy modify policy before its operation was corrected.
+          // An explicit write decision takes over, while a prior block still takes precedence.
+          if (effect?.matched && effect.action === 'github_create_pull_request') {
+            const priorKind = `${effect.service}.modify`;
+            return !store.lastChange(kind) && !store.hasUnreadableHistory(kind) && !store.hasUnreadableHistory(priorKind)
+              && d.adaptiveTrust?.getTrustLevel(effect.service, 'write').level !== 'blocked'
+              && d.adaptiveTrust?.getTrustLevel(effect.service, 'modify').level !== 'blocked'
+              && store.legacyUnchanged(priorKind, self);
+          }
+          return store.legacyUnchanged(kind, self);
+        },
         provenLevel: (kind) => {
           const [service, op] = [kind.slice(0, kind.lastIndexOf('.')), kind.slice(kind.lastIndexOf('.') + 1)];
           if (!d.adaptiveTrust || !['write', 'modify', 'delete'].includes(op)) return null;
-          if (!store.lastChange(kind)) return null; // decision 10: no recorded grant means "Ask me first"
-          return d.adaptiveTrust.getTrustLevel(service, op as OperationMutability).level;
+          const last = store.lastChange(kind);
+          if (!last) return null; // decision 10: no recorded grant means "Ask me first"
+          const level = d.adaptiveTrust.getTrustLevel(service, op as OperationMutability).level;
+          if (effect?.matched && requiresOwnerProofForSameLevelGrant(service, op, level)) {
+            if (isTrustLevelRaise(last.to as TrustLevel, level)) return null;
+            const receipt = last.consumptionId ? store.consumption(last.consumptionId) : null;
+            const expected = proposalHashOf(trustGrantProofSubject(service, op, last.to));
+            if (receipt?.principal !== 'owner' || receipt.proposalHash !== expected) return null;
+          }
+          return level;
         },
         unreadableHistory: (kind) => store.hasUnreadableHistory(kind),
         // An input the card cannot show exactly (too large, not an object, or a stand-in the hook sent)
@@ -344,11 +370,14 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
           const i = kind.lastIndexOf('.');
           const op = kind.slice(i + 1);
           if (!d.adaptiveTrust || !['read', 'write', 'modify', 'delete'].includes(op)) return null;
-          return d.adaptiveTrust.getTrustLevel(kind.slice(0, i), op as OperationMutability).level;
+          const service = kind.slice(0, i);
+          if (effect?.matched && effect.action === 'github_create_pull_request'
+            && d.adaptiveTrust.getTrustLevel(service, 'modify').level === 'blocked') return 'blocked';
+          return d.adaptiveTrust.getTrustLevel(service, op as OperationMutability).level;
         },
       });
       // Decision 13: only the serving-lease holder admits a governed effect; elsewhere it waits.
-      if (decision.verdict !== 'not-gated' && decision.verdict !== 'legacy' && !d.holdsLease()) {
+      if (decision.verdict !== 'not-gated' && (decision.verdict !== 'legacy' || effect?.standingRepository) && !d.holdsLease()) {
         return { decision: { verdict: 'ask', why: 'holder-unreachable' }, effect };
       }
       if (decision.verdict === 'proceed-once' && effect) {

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "hermetic-media-disk-floor-tests-2",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-27T19:22:05.648Z",
+  "artifactPath": "upgrades/side-effects/hermetic-media-disk-floor-tests-2.md",
+  "artifactSha256": "bd37f7a5f0181ceaa5e029ef1238eb586047d5148814802946e08c628ae0a9c4",
+  "coveredFiles": [
+    "docs/specs/hermetic-media-disk-floor-tests-2.eli16.md",
+    "tests/integration/mobile-remote-media-graph-seam.test.ts",
+    "upgrades/next/hermetic-media-disk-floor-tests-2.md",
+    "upgrades/side-effects/hermetic-media-disk-floor-tests-2.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Tests only: one fixture gets the existing fixed disk reading; production floor unchanged; machine fix (CoS 2026-11-27)",
+  "eli16Path": "docs/specs/hermetic-media-disk-floor-tests-2.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/hermetic-media-disk-floor-tests-2.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

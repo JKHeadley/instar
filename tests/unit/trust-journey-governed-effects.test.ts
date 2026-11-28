@@ -8,6 +8,21 @@ import { askSentence, decideAdmission, type AdmissionInputs } from '../../src/co
 import { planLegacyImport } from '../../src/core/trustJourney/legacyImport.js';
 
 describe('deriveEffect', () => {
+  it.each([
+    'threadline_discover', 'threadline_agents', 'threadline_history',
+    'threadline_registry_search', 'threadline_registry_status', 'threadline_registry_get',
+  ])('classifies the exact Threadline tool %s as read-only', (name) => {
+    const effect = deriveEffect(`mcp__threadline__${name}`, {});
+    expect(effect).toMatchObject({ kind: 'threadline.read', matched: true });
+    expect(decideAdmission(base({ effect }))).toEqual({ verdict: 'not-gated', why: 'read' });
+  });
+  it.each([
+    'threadline_send', 'threadline_ack', 'threadline_delete', 'threadline_registry_update',
+    'threadline_discover_and_send',
+  ])('keeps Threadline tool %s subject to admission', (name) => {
+    const effect = deriveEffect(`mcp__threadline__${name}`, {});
+    expect(decideAdmission(base({ effect }))).toEqual({ verdict: 'ask', why: 'no-grant' });
+  });
   it('ignores non-MCP and malformed names', () => {
     expect(deriveEffect('Bash', {})).toBeNull();
     expect(deriveEffect('mcp__x', {})).toBeNull();
@@ -18,6 +33,17 @@ describe('deriveEffect', () => {
     expect(deriveEffect('mcp__mail__list_threads', {})!.operation).toBe('read');
     expect(deriveEffect('mcp__mail__get_and_delete', {})!.operation).toBe('modify'); // a mutating tail is never a read
     expect(verbRules('send_message').reversibility).toBe('irreversible');
+  });
+  it.each([
+    ['deleteRecord', 'delete', 'partially-reversible'],
+    ['delete-record', 'delete', 'partially-reversible'],
+    ['sendEmail', 'write', 'irreversible'],
+    ['postMessage', 'write', 'irreversible'],
+    ['purgeAll', 'delete', 'irreversible'],
+    ['dropTable', 'delete', 'irreversible'],
+    ['sendgrid_send', 'write', 'irreversible'],
+  ])('%s keeps its existing mutating kind and reversibility', (tool, operation, reversibility) => {
+    expect(deriveEffect(`mcp__foo__${tool}`, {})).toMatchObject({ kind: `foo.${operation}`, reversibility });
   });
   it('has unknown audience without a table entry', () => {
     expect(deriveEffect('mcp__mail__send_email', { to: 'a@b.c' })!.audience).toBe('unknown');
@@ -30,6 +56,25 @@ describe('deriveEffect', () => {
     const f = deriveEffect('mcp__playwright__browser_fill_form', { fields: [{ name: 'Email', type: 'textbox' }, { name: 'One-time code', type: 'textbox' }] })!;
     expect(f.operation).toBe('sign-in');
     expect(deriveEffect('mcp__playwright__browser_type', { element: 'Search box', text: 'x' })!.operation).not.toBe('sign-in');
+  });
+  it('classifies real GitHub pull request tools and validates the repository audience', () => {
+    for (const name of ['github__create_pull_request', 'github_create_pull_request']) {
+      const tool = 'mcp__codex_apps__' + name;
+      expect(deriveEffect(tool, { repository_full_name: 'Owner/Repo' })).toMatchObject({
+        kind: 'codex_apps.write', audience: ['owner/repo'], matched: true,
+      });
+      for (const repository_full_name of [undefined, 'owner', 'owner/repo,other/repo', 'owner/repo\n', ['owner/repo']]) {
+        expect(deriveEffect(tool, { repository_full_name })?.audience).toBe('unknown');
+      }
+    }
+    expect(deriveEffect('mcp__codex_apps__github__update_pull_request', { repository_full_name: 'owner/repo' })).toMatchObject({
+      kind: 'codex_apps.modify', audience: ['owner/repo'],
+    });
+    expect(deriveEffect('mcp__codex_apps__github__merge_pull_request', { repository_full_name: 'owner/repo' })?.floor)
+      .toContain('irreversible-outside-role');
+    expect(verbRules('github__delete_file').operation).toBe('delete');
+    expect(verbRules('github_post_comment').reversibility).toBe('irreversible');
+    expect(verbRules('other_create_object').operation).toBe('modify');
   });
   it('the action identity binds the exact input, in any key order', () => {
     expect(actionIdentityOf('t', { a: 1, b: [2] })).toBe(actionIdentityOf('t', { b: [2], a: 1 }));

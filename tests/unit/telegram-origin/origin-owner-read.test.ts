@@ -10,7 +10,7 @@ import { wireDigest } from '../../../src/messaging/telegram-origin/CanonicalOrig
 import {
   authorHolding, authorStatement, OriginOwnerReader, parseReceiptAnswer, readOperationOutcome, OWNER_READ_ROUTE_DEADLINE_MS,
 } from '../../../src/messaging/telegram-origin/OriginOwnerRead.js';
-import { classifyOperationOutcome } from '../../../src/messaging/telegram-origin/OriginOperationOutcome.js';
+import { classifyOperationOutcome, CONFIRMATION_WINDOW_MS } from '../../../src/messaging/telegram-origin/OriginOperationOutcome.js';
 import type { OriginAuditRecord } from '../../../src/messaging/telegram-origin/StoreTypes.js';
 import type { OriginMeshCommand } from '../../../src/messaging/telegram-origin/OriginMesh.js';
 
@@ -246,5 +246,31 @@ describe('readOperationOutcome', () => {
     const out = await pending;
     expect(Date.now() - started).toBeLessThanOrEqual(OWNER_READ_ROUTE_DEADLINE_MS);
     expect(out.body).toMatchObject({ outcome: 'unknown', safeToResend: false, why: 'timeout' });
+  });
+});
+
+describe('expired Telegram confirmation', () => {
+  it('closes the confirmation window without authorizing a resend and accepts a later receipt', async () => {
+    const resolvedAt = 1000;
+    const row = audit({ owner: 'owner', author: 'owner', state: 'outcome-unknown', attempts: [{
+      attemptId: 'a-1', childId: 'c-1', materializationId: 'm-1', ownerBootId: 'boot',
+      deliveryMachineId: 'owner', phase: 'dispatched', outcome: 'outcome-unknown',
+      receiptJson: null, createdAt: 1, resolvedAt,
+    }] });
+    const deadline = resolvedAt + CONFIRMATION_WINDOW_MS;
+    expect(classifyOperationOutcome(OP, row, [], deadline - 1)).toMatchObject({ outcome: 'unknown', safeToResend: false });
+    const options = { ...deps('owner', { [OP]: row }, null), now: () => deadline };
+    expect((await readOperationOutcome(options, OP)).body).toMatchObject({ outcome: 'confirmation-expired', safeToResend: false });
+    row.attempts[0].outcome = 'accepted';
+    row.attempts[0].receiptJson = '{"messageId":"42"}';
+    expect((await readOperationOutcome(options, OP)).body).toMatchObject({ outcome: 'delivered', messageIds: ['42'] });
+  });
+
+  it('preserves confirmation expiry from the execution owner and keeps the resend guard', async () => {
+    const row = audit({ owner: 'owner', author: 'author', state: null });
+    const remote = reader(async () => ownerReply({ outcome: 'unknown', confirmationExpired: true, safeToResend: true }));
+    expect((await readOperationOutcome(deps('author', { [OP]: row }, remote), OP)).body).toMatchObject({
+      outcome: 'confirmation-expired', safeToResend: false,
+    });
   });
 });

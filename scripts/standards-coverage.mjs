@@ -629,7 +629,7 @@ function validateRootSelfWiring() {
     STANDARDS_AREA_AUDIT_BASE_REQUIRED: '${{ steps.area-audit-base.outputs.required }}',
     STANDARDS_DIRECTION_BASE_FILE: '${{ runner.temp }}/standards-registry-base.md',
     STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: '${{ runner.temp }}/standards-direction-approver-base.pem',
-    STANDARDS_DIRECTION_BASE_REVISION: "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}",
+    STANDARDS_DIRECTION_BASE_REVISION: '${{ steps.area-audit-base.outputs.base }}',
     // Path B (2026-08-22): the operator-review context the guard reads. Pinned
     // here for the same reason as the others — this contract is deliberately
     // EXACT so the CI wiring cannot be quietly rearranged, and adding an input
@@ -664,16 +664,34 @@ function validateRootSelfWiring() {
   // every operator approval read as UNAVAILABLE, which fails safe but would
   // silently return the operator to needing a key.
   const reviewStep = steps.find((step) => step?.name === 'Fetch operator review context (direction guard path B)');
+  // 2026-11-27: the protected base is the main commit the run ACTUALLY tests. A pull_request
+  // run checks out the PR merged onto the base branch's tip AT THAT TIME (HEAD^1), while the
+  // event's pull_request.base.sha is the tip when the PR was last pushed. When main gained a
+  // registry change in between, the guard compared against the older base and read the inherited
+  // standards as the PR's own (PR #3387, 2026-11-27 19:01: two standards that arrived with #3486).
+  // HEAD^1 is used only when it moves the base FORWARD (the event base is its ancestor) and is
+  // itself on origin/main, so the trust root stays a protected main commit, never a PR commit.
+  // pull_request_review runs check out the same merge ref and carry the same stale base, so they
+  // take the same rule. The step trusts the origin/main tracking ref, which is safe here because
+  // no PR code runs before this step; with no origin/main, both checks fail and the event base stands.
   const expectedBaseRun = [
-    'git cat-file -e "$BASE_SHA^{commit}"',
-    'if git cat-file -e "$BASE_SHA:docs/standards-registry-area-audits.json"; then',
-    '  git show "$BASE_SHA:docs/standards-registry-area-audits.json" > "$RUNNER_TEMP/standards-area-audits-base.json"',
+    'BASE="$BASE_SHA"',
+    'if { [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "pull_request_review" ]; } && git rev-parse -q --verify "HEAD^2" >/dev/null; then',
+    '  PARENT=$(git rev-parse "HEAD^1")',
+    '  if git merge-base --is-ancestor "$BASE_SHA" "$PARENT" && git merge-base --is-ancestor "$PARENT" origin/main; then',
+    '    BASE="$PARENT"',
+    '  fi',
+    'fi',
+    'echo "base=$BASE" >> "$GITHUB_OUTPUT"',
+    'git cat-file -e "$BASE^{commit}"',
+    'if git cat-file -e "$BASE:docs/standards-registry-area-audits.json"; then',
+    '  git show "$BASE:docs/standards-registry-area-audits.json" > "$RUNNER_TEMP/standards-area-audits-base.json"',
     '  echo "required=1" >> "$GITHUB_OUTPUT"',
     'else',
     '  echo "required=0" >> "$GITHUB_OUTPUT"',
     'fi',
-    'git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"',
-    'git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
+    'git show "$BASE:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"',
+    'git show "$BASE:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
     '',
   ].join('\n');
   // Second-pass finding 1 (2026-08-23): the pin used to constrain this step's KEYS
@@ -735,7 +753,8 @@ function validateRootSelfWiring() {
     exactKeys(installStep, ['run']) &&
     exactKeys(baseStep, ['name', 'id', 'env', 'run']) &&
     baseStep.name === 'Resolve protected-base area ledger' &&
-    exactKeys(baseStep.env, ['BASE_SHA']) && baseStep.env.BASE_SHA === expectedBaseSha &&
+    exactKeys(baseStep.env, ['BASE_SHA', 'EVENT_NAME']) && baseStep.env.BASE_SHA === expectedBaseSha &&
+    baseStep.env.EVENT_NAME === '${{ github.event_name }}' &&
     baseStep.run === expectedBaseRun &&
     // 2026-08-23: the `if:` key is GONE from this pin because it is gone from the
     // step. Gating the evidence-gathering on `pull_request` made the guard refuse

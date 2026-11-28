@@ -1810,6 +1810,31 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-group + .needs-group { border-top: 1px solid var(--hairline); }
 .needs-groups:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
+/* Keep main-content targets usable without changing the size of document text links. */
+.main .foot-note > a[href] {
+  display: inline-block;
+  max-inline-size: 100%;
+  min-inline-size: 24px;
+  min-block-size: 24px;
+  padding: 3px 2px;
+  overflow-wrap: anywhere;
+}
+.main .mb-sources > summary { min-block-size: 24px; }
+@media (max-width: 599px) {
+  .main .foot-note > a[href] {
+    /* Keep a full 44px hit when inline boxes start on a fractional pixel. */
+    min-inline-size: 46px;
+    min-block-size: 44px;
+    padding-block: 12px;
+  }
+  .main :is(.fchip, .head-link, .mb-toggle, .mb-sources > summary, .raw > summary),
+  .main .ask-link:not(.files-page .ask-link),
+  .main button.list-head:not(#sec-lookup > .list-head) {
+    min-block-size: 44px;
+    min-inline-size: 44px;
+  }
+}
+
 /* Pending sends are the user's own local content, with ordinary phone-sized actions. */
 .chat-pending { margin: var(--s-3) 0; padding: var(--s-3); border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface); min-width: 0; }
 .chat-pending-entry { padding: var(--s-3) 0; border-top: 1px solid var(--hairline); min-width: 0; }
@@ -1820,6 +1845,26 @@ a.needs-row:hover { background: var(--surface-raised); }
 .chat-file-recovery-sheet .sheet-close { min-width: 44px; min-height: 44px; }
 .chat-file-recovery-sheet .chat-list-actions { min-width: 0; max-width: 100%; }
 .chat-file-recovery-sheet a[download] { min-width: 0; max-width: 100%; min-height: 44px; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+
+/* Detail pages use content width after navigation. A readable card minimum in rem
+   responds to both available width and text size; a lone card fills the row. */
+.main.detail-page { max-width: none; min-width: 0; }
+.detail-page :where(.page-sections, .detail-card-grid, .machine-cards, .mb-groups) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+  gap: var(--s-4);
+  align-items: start;
+  min-width: 0;
+}
+.detail-page :where(.page-sections, .detail-card-grid, .machine-cards, .mb-groups) > * { min-width: 0; }
+.detail-page .page-sections > :not(.list-section):not(.card),
+.detail-page .page-sections > :where([data-operator-need], .attn, .bad) { grid-column: 1 / -1; }
+.detail-page p { max-width: 65ch; }
+.detail-card-grid:empty { display: none; }
+
+.detail-page .detail-card-grid > :where(h2, p, button) { grid-column: 1 / -1; }
+.detail-page :where(.mb-groups, .mb-hero, .mb-glance, .mb-tools, .mb-sources) { max-width: none; }
+.detail-page .mb-sub { max-width: 65ch; }
 
 /* Accounts remain a single reset-ordered list, including with full-width detail-page layouts. */
 .main.accounts-page { max-width: none; min-width: 0; }

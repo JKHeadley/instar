@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "journal-tail-read-bounded",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T17:13:46.313Z",
+  "artifactPath": "upgrades/side-effects/journal-tail-read-bounded.md",
+  "artifactSha256": "0a5187d38a090427397cec0965ade69df85cb3afc128d97e4d5d304019998499",
+  "coveredFiles": [
+    "src/core/CoherenceJournal.ts",
+    "tests/unit/coherence-journal-tail-equivalence.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One pure reader reads its window in chunks and stops at limit; results proven identical to the previous body; query, cursor and replay untouched.",
+  "eli16Path": "docs/eli16/journal-tail-read-bounded.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/journal-tail-read-bounded.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
