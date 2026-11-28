@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-18T14:58:09.959Z",
+  "slug": "skill-learning-owner-only",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/skillLearning/wire.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: this change only narrows which inbound Telegram rows skill learning admits (an owner check on a read); it adds no action, retry, timer or loop"
+  },
+  "verdict": "pass"
+}

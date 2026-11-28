@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "skill-learning-owner-only",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T15:51:12.322Z",
+  "artifactPath": "upgrades/side-effects/skill-learning-owner-only.md",
+  "artifactSha256": "c0221fd81a6ef43caf2911dd4c53e5ac1a4ee7db8cc48f116c843621e86fb01f",
+  "coveredFiles": [
+    "docs/specs/skill-learning-owner-only.eli16.md",
+    "src/monitoring/skillLearning/wire.ts",
+    "tests/unit/skill-learning-wire.test.ts",
+    "upgrades/next/skill-learning-owner-only.md",
+    "upgrades/side-effects/skill-learning-owner-only.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-109 whole PR after merging main (SEC-105 base now merged): narrows skill learning's Telegram admission to the learning owner; signal-only dark feature, fail closed, reversible by revert, no stored data; independently reviewed.",
+  "eli16Path": "docs/specs/skill-learning-owner-only.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/skill-learning-owner-only.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}
