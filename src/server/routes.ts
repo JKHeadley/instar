@@ -1938,6 +1938,8 @@ export interface RouteContext {
   requestSupervisedRestart?: (reason: string, requestedBy?: string) => Promise<boolean> | boolean;
   /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
   pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
+  /** SEC-170: this machine's share of the agent's unknown-browser PIN budget (absent = 20). */
+  pinShare?: import('../core/PinShare.js').PinShareProvider | null;
   /** The dashboard unlock's rule: this connection may not carry a PIN. */
   pinEntryRefusedHere?: (req: import('express').Request) => boolean;
   /** SEC-135: sign-in's public PIN limits as one hook (context + one synchronous verifier). Absent in bare test contexts. */
@@ -17529,7 +17531,7 @@ export function createRoutes(ctx: RouteContext): Router {
   const requestPinCheck = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
     pinSource: (req) => `req:${String((req as unknown as { _pinRequestKey?: string })._pinRequestKey ?? 'none')}` });
   const publicCapPinCheck = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
-    pinSource: () => GLOBAL_PIN_KEY, maxAttempts: GLOBAL_PIN_MAX_ATTEMPTS, clearOnSuccess: false });
+    pinSource: () => GLOBAL_PIN_KEY, maxAttempts: GLOBAL_PIN_MAX_ATTEMPTS, maxAttemptsLive: () => ctx.pinShare?.share() ?? GLOBAL_PIN_MAX_ATTEMPTS, clearOnSuccess: false });
   const PIN_ALERT_ONLY_KEY = '__pin_alert_only__';
   // SEC-135: one switch, dev-gated (live on a development agent, dark on the fleet). Off = piece 1c exactly.
   const approvalLinksOn = (): boolean => resolveDevAgentGate(

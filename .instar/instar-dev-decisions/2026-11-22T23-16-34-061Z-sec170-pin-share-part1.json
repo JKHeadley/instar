@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-22T23:16:34.061Z",
+  "slug": "sec170-pin-share-part1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 392,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PinAttemptStore.ts",
+      "src/core/PinShare.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/server/AgentServer.ts",
+      "src/server/mandatePin.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 369,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the store write retry is bounded to once a second and only while a PIN check runs"
+  },
+  "verdict": "pass"
+}

@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { writeDurable } from './PinShare.js';
 
 interface AttemptEntry {
   count: number;
@@ -37,23 +38,41 @@ export class PinAttemptStore {
    */
   private saturatedUntil = 0;
   private writeFailureReported = false;
+  /**
+   * SEC-170: set when a wrong guess on the shared unknown-browser key could not be written. While set,
+   * that key reads as spent (fail toward stricter), and each check retries the write at most once a
+   * second; the first successful write clears it.
+   */
+  private globalUnsavedSince = 0;
+  private lastGlobalRetryAt = 0;
   private readonly maxAttempts: number;
   private readonly windowMs: number;
   private readonly now: () => number;
 
-  constructor(opts: { stateDir: string; maxAttempts?: number; windowMs?: number; now?: () => number }) {
+  /** SEC-170: refuse on a failed write of the shared key only while the pool-wide budget is on. */
+  private readonly strictGlobal: () => boolean;
+
+  constructor(opts: { stateDir: string; maxAttempts?: number; windowMs?: number; now?: () => number; strictGlobal?: () => boolean }) {
     const stateSub = path.join(opts.stateDir, 'state');
     fs.mkdirSync(stateSub, { recursive: true });
     this.filePath = path.join(stateSub, 'pin-attempts.json');
     this.maxAttempts = opts.maxAttempts ?? 5;
     this.windowMs = opts.windowMs ?? 5 * 60 * 1000;
     this.now = opts.now ?? (() => Date.now());
+    this.strictGlobal = opts.strictGlobal ?? (() => false);
     this.load();
   }
 
   /** True when the IP is currently locked out. */
   blocked(ip: string, maxAttempts = this.maxAttempts): boolean {
+    // SEC-170: a cap of 0 (a machine whose PIN share is 0) admits nothing, even before any row exists.
+    if (maxAttempts <= 0) return true;
     if (ip === GLOBAL_PIN_KEY && this.now() < this.saturatedUntil) return true;
+    if (ip === GLOBAL_PIN_KEY && this.globalUnsavedSince && this.strictGlobal()) {
+      const now = this.now();
+      if (now - this.lastGlobalRetryAt >= 1000) { this.lastGlobalRetryAt = now; if (this.persist()) this.globalUnsavedSince = 0; }
+      if (this.globalUnsavedSince) return true;
+    }
     const e = this.current(ip);
     return e !== undefined && e.count >= maxAttempts;
   }
@@ -87,7 +106,10 @@ export class PinAttemptStore {
       remaining.set(key, Math.max(0, (max ?? this.maxAttempts) - e.count));
     }
     this.prune();
-    if (dirty) this.persist();
+    if (dirty && !this.persist() && remaining.has(GLOBAL_PIN_KEY) && !this.globalUnsavedSince) {
+      this.globalUnsavedSince = this.now();
+      this.lastGlobalRetryAt = this.globalUnsavedSince;
+    }
     return remaining;
   }
 
@@ -168,22 +190,30 @@ export class PinAttemptStore {
       impact: 'For up to five minutes, PIN sign-in from a browser that never signed in before is refused; known browsers, the phone and this computer still work.' });
   }
 
-  private persist(): void {
+  /** True when the counters reached the disk (flushed when SEC-170's pool-wide budget is on). */
+  private persist(): boolean {
     try {
-      const tmp = this.filePath + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.entries)), { mode: 0o600 });
-      fs.renameSync(tmp, this.filePath);
+      const text = JSON.stringify(Object.fromEntries(this.entries));
+      if (this.strictGlobal()) {
+        writeDurable(this.filePath, text); // SEC-170: flushed, so a counted guess survives a power loss
+      } else {
+        const tmp = this.filePath + '.tmp';
+        fs.writeFileSync(tmp, text, { mode: 0o600 });
+        fs.renameSync(tmp, this.filePath);
+      }
       this.writeFailureReported = false;
+      return true;
     } catch (err) {
-      // A failed write keeps enforcing the in-memory counters (still correct in this process) and is
-      // reported once per failure episode; it never pauses anyone's sign-in.
+      // A failed write keeps enforcing the in-memory counters and is reported once per episode. For the
+      // shared unknown-browser key it also refuses until a write succeeds (SEC-170: fail toward stricter).
       if (!this.writeFailureReported) {
         this.writeFailureReported = true;
         DegradationReporter.getInstance().report({ feature: 'PinAttemptStore.persist',
           primary: 'PIN guess counters written to disk', fallback: 'Counters keep enforcing in memory',
           reason: err instanceof Error ? err.message : String(err),
-          impact: 'A restart during this episode would lose at most the current five-minute window of counted guesses.' });
+          impact: 'A restart during this episode would lose at most the current five-minute window of counted guesses. PIN sign-in from new browsers is refused until a write succeeds.' });
       }
+      return false;
     }
   }
 }

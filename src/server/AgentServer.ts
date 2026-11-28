@@ -1056,6 +1056,7 @@ export class AgentServer {
   private meteredSpendGate: MeteredSpendGate | null = null;
   private spendPlanStore: RenderedPlanStore | null = null;
   private pinAttemptStore: PinAttemptStore | null = null;
+  private pinShare: import('../core/PinShare.js').PinShareProvider | null = null;
   /** SEC-135: sign-in's public PIN limits, handed to routes as ctx.publicPin. Set in the constructor. */
   private publicPinHook: PublicPinHook | null = null;
   private meteredSweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -1405,6 +1406,8 @@ export class AgentServer {
     plannedRestartLeaseAdmission?: import('./routes.js').RouteContext['plannedRestartLeaseAdmission'];
     config: InstarConfig;
     sessionManager: SessionManager;
+    /** SEC-170: this machine's share of the agent's unknown-browser PIN budget. Absent = 20 per machine (today). */
+    pinShare?: import('../core/PinShare.js').PinShareProvider | null;
     terminateSessionAuthority?: SessionTerminateAuthority;
     /** Override the same-host apprenticeship peer read (tests/custom embeddings). */
     apprenticeshipPeerCycleReader?: (instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>;
@@ -2164,8 +2167,10 @@ export class AgentServer {
 
     // PIN-only desktop access requires a durable guess budget. Construct it
     // before any dashboard unlock can mint an operator session.
+    this.pinShare = options.pinShare ?? null;
     try {
-      this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir });
+      const pinShareRef = this.pinShare;
+      this.pinAttemptStore = new PinAttemptStore({ stateDir: options.config.stateDir, strictGlobal: () => pinShareRef?.state().enabled === true });
     } catch (err) {
       // @silent-fallback-ok — the warning is visible and desktop admission stays dark without a durable PIN budget.
       console.warn('[instar] PIN attempt store unavailable; remote desktop stays dark:', err);
@@ -2224,7 +2229,8 @@ export class AgentServer {
     // generated after AgentServer construction (first-boot timing issue).
     // Config values are checked at request time via this.config which may be
     // updated by LiveConfig/PostUpdateMigrator after construction.
-    const GLOBAL_MAX_ATTEMPTS = GLOBAL_PIN_MAX_ATTEMPTS;
+    // SEC-170: the unknown-browser cap is this machine's share of the agent's 20 (20 when the switch is off).
+    const globalPinCap = (): number => this.pinShare?.share() ?? GLOBAL_PIN_MAX_ATTEMPTS;
     const configRef = this.config;
 
     // SEC-002: per-client throttle + known-browser (cookie) bypass + hard cap + owner alert.
@@ -2288,11 +2294,29 @@ export class AgentServer {
       if (!c.isLocalDirect && !c.markerId) {
         // Durable cross-restart backstops, never applied to a known browser: the real client's own
         // budget, and the shared unmarked budget (a restart no longer resets it).
-        if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
+        if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, globalPinCap())) {
           return { ok: false, limit: 'durable', retryAfterSeconds: this.pinAttemptStore?.windowSeconds ?? 300 };
         }
       }
       return { ok: true };
+    };
+    // SEC-170 §5: with a small share a few typos can spend it, so a spent share alone is not called an
+    // attack. It alerts when the share was spent by more than one source, or spent in two windows in a row.
+    const SHARE_WINDOW_MS = 5 * 60 * 1000;
+    let shareWindowStart = 0;
+    let shareSources = new Set<string>();
+    let lastShareSpentWindow = -1;
+    let lastShareAlertAt = -Infinity;
+    const noteShareSource = (ip: string, now: number): void => {
+      if (now - shareWindowStart >= SHARE_WINDOW_MS) { shareWindowStart = now; shareSources = new Set(); }
+      if (shareSources.size < 64) shareSources.add(ip || 'unattributed');
+    };
+    const shareSpentIsAttack = (ip: string, now: number): boolean => {
+      noteShareSource(ip, now);
+      const window = Math.floor(now / SHARE_WINDOW_MS);
+      const twoInARow = lastShareSpentWindow === window - 1;
+      lastShareSpentWindow = window;
+      return shareSources.size > 1 || twoInARow;
     };
     /** True when the attempt may reach the compare; otherwise the 429 is already sent. */
     const publicPinAdmit = (c: PublicPinCtx, res: Response, now: number): boolean => {
@@ -2324,13 +2348,19 @@ export class AgentServer {
         bruteForceAlert = !!pinThrottle.recordFailure(c.ip, c.markerId, now).alert;
         if (!c.isLocalDirect && !c.markerId) {
           if (c.ip) keys.push({ key: c.ip });
-          keys.push({ key: GLOBAL_PIN_KEY, max: GLOBAL_MAX_ATTEMPTS });
+          noteShareSource(c.ip, now);
+          keys.push({ key: GLOBAL_PIN_KEY, max: globalPinCap() });
         }
       }
       if (c.localUnmarked && this.pinAttemptStore) keys.push({ key: LOCAL_PIN_KEY, max: LOCAL_PIN_MAX_FAILURES });
       keys.push(...extra);
       const remaining = this.pinAttemptStore ? this.pinAttemptStore.recordFailures(keys) : new Map<string, number>();
-      if (bruteForceAlert) {
+      const shareAlert = remaining.get(GLOBAL_PIN_KEY) === 0
+        && this.pinShare?.state().enabled
+        && shareSpentIsAttack(c.ip, now)
+        && now - lastShareAlertAt >= 30 * 60 * 1000;
+      if (shareAlert) lastShareAlertAt = now;
+      if (bruteForceAlert || shareAlert) {
         // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
         DegradationReporter.getInstance().report({
           feature: 'DashboardPin.bruteForce',
@@ -2422,7 +2452,7 @@ export class AgentServer {
     /** Whether the strangers' shared aggregate is used up right now (read-only). */
     const publicAggregateFull = (now: number): boolean =>
       pinThrottle.consult(UNATTRIBUTED_PIN_SOURCE, null, now).reason === 'global-cap'
-      || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS) === true;
+      || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, globalPinCap()) === true;
     const publicPinVerify = (req: Request, candidate: unknown, opts: { requestKey: string; alertKey?: string }): PublicPinVerdict => {
       if (unlockRefusedHere(req)) return { ok: false, reason: 'insecure-connection' };
       const current = readCurrentPin();
@@ -2443,14 +2473,14 @@ export class AgentServer {
       if (!timingSafeEqual(ha, hb)) {
         const extra: Array<{ key: string; max?: number }> = [{ key: opts.requestKey, max: PUBLIC_PIN_REQUEST_MAX }];
         // Stranger guesses feed the throttle's brute-force alert; marked and local ones feed the alert-only count.
-        const countAlert = path !== 'public' && !!opts.alertKey && !!store && !store.blocked(opts.alertKey, GLOBAL_MAX_ATTEMPTS);
-        if (countAlert) extra.push({ key: opts.alertKey as string, max: GLOBAL_MAX_ATTEMPTS });
+        const countAlert = path !== 'public' && !!opts.alertKey && !!store && !store.blocked(opts.alertKey, GLOBAL_PIN_MAX_ATTEMPTS);
+        if (countAlert) extra.push({ key: opts.alertKey as string, max: GLOBAL_PIN_MAX_ATTEMPTS });
         const remaining = publicPinFailure(c, now, store ? extra : []);
         if (!store) memRequestCharge(opts.requestKey, now);
         if (countAlert && remaining.get(opts.alertKey as string) === 0) {
           DegradationReporter.getInstance().report({ feature: 'DashboardPin.approvalLinkGuessing',
             primary: 'Wrong PINs are being entered on approval links', fallback: 'Each approval link allows only a few wrong PINs',
-            reason: `${GLOBAL_MAX_ATTEMPTS} wrong PINs on approval links within the window`,
+            reason: `${GLOBAL_PIN_MAX_ATTEMPTS} wrong PINs on approval links within the window`,
             impact: 'If this was not you, someone may be trying to guess your PIN through an approval link.' });
         }
         return { ok: false, reason: 'wrong-pin', path, retryAfterSeconds: 0, aggregateFull: publicAggregateFull(now) };
@@ -7010,6 +7040,7 @@ export class AgentServer {
       meteredLaneRuntime: this.meteredLaneRuntime,
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
+      pinShare: this.pinShare,
       publicPin: this.publicPinHook,
       pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
       providerCostReportStore: this.providerCostReportStore,
