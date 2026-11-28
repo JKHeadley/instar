@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "npm-collector-drop-detection",
+  "sessionId": "cdb8ad9c-458e-475e-a5e7-a5cd6c020cb0",
+  "timestamp": "2026-11-17T15:35:02.073Z",
+  "artifactPath": "upgrades/side-effects/npm-collector-drop-detection.md",
+  "artifactSha256": "8834a9a35e210062e63f7254a98e0fba593d62586e17a14d9609f239c8f928d3",
+  "coveredFiles": [
+    "scripts/collect-metrics.py",
+    "scripts/tests/test_collect_metrics_changes.py"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Operator-only telemetry script outside the agent runtime; informational alerts only; a revert fully undoes it",
+  "eli16Path": "docs/eli16/npm-collector-drop-detection.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/npm-collector-drop-detection.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
