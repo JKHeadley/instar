@@ -73,7 +73,8 @@ export function parseReceiptAnswer(machineId: string, operationId: string, reply
   // A record the owner holds with no `outcome` (an older version), or with a
   // value outside the closed sets, is an answer with no verdict. Never read the
   // raw `state` as one: a `suppressed` state may be a delivered duplicate.
-  const outcome = typeof r.outcome === 'string' && (OPERATION_OUTCOMES as readonly string[]).includes(r.outcome) ? r.outcome as OperationOutcome : null;
+  const wireOutcome = typeof r.outcome === 'string' && (OPERATION_OUTCOMES as readonly string[]).includes(r.outcome) ? r.outcome as OperationOutcome : null;
+  const outcome = wireOutcome === 'unknown' && r.confirmationExpired === true ? 'confirmation-expired' : wireOutcome;
   const failure = r.failure === undefined || r.failure === null ? null : failureCause(r.failure);
   if (r.role !== 'execution-owner' || !outcome || typeof r.safeToResend !== 'boolean' || (r.failure !== undefined && r.failure !== null && !failure)) {
     return { kind: 'missing', machineId, why: 'old-version' };
@@ -309,7 +310,7 @@ async function readOne(deps: OutcomeReadDeps, operationId: string, deadlineAt: n
   let captured: UnrecordedReceiptEntry[] = [];
   try { captured = deps.unrecorded(operationId); } catch { /* @silent-fallback-ok — the fallback file is unreadable; the store answers alone and the verdict degrades to unknown, never to not-delivered */ }
   const audit = await deps.getOperation(operationId);
-  const verdict = audit || captured.length ? classifyOperationOutcome(operationId, audit, captured) : null;
+  const verdict = audit || captured.length ? classifyOperationOutcome(operationId, audit, captured, deps.now?.()) : null;
   const envelope = envelopeOf(audit);
   const owner = envelope?.executionOwnerMachineId && MACHINE.test(envelope.executionOwnerMachineId) ? envelope.executionOwnerMachineId : null;
   const author = envelope?.originMachineId && MACHINE.test(envelope.originMachineId) ? envelope.originMachineId : null;

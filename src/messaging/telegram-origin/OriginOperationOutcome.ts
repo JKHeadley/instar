@@ -13,7 +13,7 @@ import { readPolicyVerdict } from './OriginPolicyVerdict.js';
  * receipt is the strongest evidence available; absence of a receipt after a
  * dispatched request stays `unknown`, never `not-delivered`.
  */
-export type OperationOutcome = 'delivered' | 'partially-delivered' | 'not-delivered' | 'pending' | 'unknown';
+export type OperationOutcome = 'delivered' | 'partially-delivered' | 'not-delivered' | 'pending' | 'unknown' | 'confirmation-expired';
 
 export interface OperationOutcomeVerdict {
   operationId: string;
@@ -48,7 +48,7 @@ export type SuppressionReason = typeof SUPPRESSION_REASONS[number];
 /** §3a item 8 — the closed set of definite-failure causes. */
 export const FAILURE_CAUSES = ['refused', 'never-left', 'deadline'] as const;
 export type FailureCause = typeof FAILURE_CAUSES[number];
-export const OPERATION_OUTCOMES: readonly OperationOutcome[] = ['delivered', 'partially-delivered', 'not-delivered', 'pending', 'unknown'];
+export const OPERATION_OUTCOMES: readonly OperationOutcome[] = ['delivered', 'partially-delivered', 'not-delivered', 'pending', 'unknown', 'confirmation-expired'];
 const ENDED_ON_PURPOSE = new Set<SuppressionReason>(['quiet-notification-recorded', 'historical-notice-retired', 'recorded-by-caller']);
 
 export function suppressionReason(value: unknown): SuppressionReason | null {
@@ -88,7 +88,10 @@ export function receiptMessageIds(receiptJson: string | null): string[] {
   } catch { return []; }
 }
 
-export function classifyOperationOutcome(operationId: string, audit: OriginAuditRecord | null, captured: UnrecordedReceiptEntry[]): OperationOutcomeVerdict {
+export const CONFIRMATION_WINDOW_MS = 30 * 60_000;
+const CONFIRMATION_EXPIRED_DETAIL = 'The confirmation window expired. Delivery is still unverified. Do not resend.';
+
+export function classifyOperationOutcome(operationId: string, audit: OriginAuditRecord | null, captured: UnrecordedReceiptEntry[], now = Date.now()): OperationOutcomeVerdict {
   const capturedByChild = new Map(captured.map(entry => [entry.childId, entry]));
   if (!audit || !audit.operation) {
     if (captured.length && captured.every(entry => typeof entry.messageId === 'string' && /^[1-9]\d*$/.test(entry.messageId) && Number.isSafeInteger(Number(entry.messageId)))) return { operationId, outcome: 'delivered', safeToResend: false, source: 'unrecorded-receipt',
@@ -98,15 +101,16 @@ export function classifyOperationOutcome(operationId: string, audit: OriginAudit
       detail: audit ? 'This machine holds the evidence only; the send ran on another machine.' : 'No record of this operation on this machine.' };
   }
   const messageIds: string[] = [];
-  let fromStore = 0, fromFallback = 0, unresolvedDispatch = 0;
+  let fromStore = 0, fromFallback = 0;
+  const unresolvedDispatch = [];
   for (const child of audit.children) {
     const accepted = audit.attempts.find(a => a.childId === child.childId && a.outcome === 'accepted' && receiptMessageIds(a.receiptJson).length > 0);
     if (accepted) { fromStore++; messageIds.push(...receiptMessageIds(accepted.receiptJson)); continue; }
     const entry = capturedByChild.get(child.childId);
     if (entry && typeof entry.messageId === 'string' && /^[1-9]\d*$/.test(entry.messageId) && Number.isSafeInteger(Number(entry.messageId))) { fromFallback++; messageIds.push(entry.messageId); continue; }
-    if (audit.attempts.some(a => a.childId === child.childId && a.phase === 'dispatched' &&
+    unresolvedDispatch.push(...audit.attempts.filter(a => a.childId === child.childId && a.phase === 'dispatched' &&
       (a.outcome === null || a.outcome === 'outcome-unknown' || a.outcome === 'expired-unresolved' ||
-        (a.outcome === 'accepted' && receiptMessageIds(a.receiptJson).length === 0)))) unresolvedDispatch++;
+        (a.outcome === 'accepted' && receiptMessageIds(a.receiptJson).length === 0))));
   }
   const delivered = fromStore + fromFallback;
   const source = fromStore && fromFallback ? 'origin-store+unrecorded-receipt' : fromFallback ? 'unrecorded-receipt' : 'origin-store';
@@ -116,7 +120,13 @@ export function classifyOperationOutcome(operationId: string, audit: OriginAudit
     detail: fromFallback ? 'Telegram accepted it and returned a message id; the receipt is in the fallback record and will be folded into the store.' : 'Telegram accepted it and the receipt is recorded.' };
   if (delivered > 0) return { operationId, outcome: 'partially-delivered', safeToResend: false, source, messageIds, state,
     detail: `${delivered} of ${total} parts reached Telegram. Check before sending the rest yourself.` };
-  if (unresolvedDispatch > 0) return { operationId, outcome: 'unknown', safeToResend: false, source: 'origin-store', messageIds, state,
+  if (state === 'outcome-unknown' && unresolvedDispatch.length > 0 &&
+      unresolvedDispatch.every(a => a.outcome === 'outcome-unknown' && a.resolvedAt !== null &&
+        Number.isFinite(a.resolvedAt) && now - a.resolvedAt >= CONFIRMATION_WINDOW_MS)) {
+    return { operationId, outcome: 'confirmation-expired', safeToResend: false, source, messageIds, state,
+      detail: CONFIRMATION_EXPIRED_DETAIL, unresolvedDispatch: true };
+  }
+  if (unresolvedDispatch.length > 0) return { operationId, outcome: 'unknown', safeToResend: false, source: 'origin-store', messageIds, state,
     detail: 'The request went to Telegram and no answer was recorded. It may have arrived; do not resend.', unresolvedDispatch: true };
   const holdDetail = audit.operation.holdDetail ?? null;
   // 3g item 3 — the verdict column is read first: a reply the outbound check handed back is
@@ -277,6 +287,11 @@ export function resolveOutcome(local: LocalEvidence, owner: OwnerEvidence, autho
   // 4 — the owner still has it.
   if (ov?.outcome === 'pending') return done({ ...base, outcome: 'pending', safeToResend: false, source: 'execution-owner', answeredBy: ov.machineId,
     detail: ov.detail ?? 'The machine that sends to Telegram still has it and will deliver it.', row: 4 });
+  const expired = ov?.outcome === 'confirmation-expired' ? ov
+    : !ov && lv?.outcome === 'confirmation-expired' ? lv : null;
+  if (expired) return done({ ...base, outcome: 'confirmation-expired', safeToResend: false,
+    source: ov ? 'execution-owner' : lv!.source, answeredBy: ov?.machineId ?? selfMachineId,
+    detail: CONFIRMATION_EXPIRED_DETAIL, row: 5 });
   // 5 — the owner's own send is unresolved.
   if (ov?.outcome === 'unknown' || lv?.unresolvedDispatch || local.ownerUnstated) return done({ ...base, outcome: 'unknown', safeToResend: false,
     source: ov ? 'execution-owner' : lv?.source ?? 'none', answeredBy: ov ? ov.machineId : selfMachineId, why: 'owner-unresolved',

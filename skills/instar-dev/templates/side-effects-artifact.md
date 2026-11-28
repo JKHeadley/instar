@@ -124,6 +124,39 @@ Answer each in writing (a "no" or unjustified "n/a" blocks the commit):
 
 ---
 
+## 6c. Delight the user (Delight the User standard)
+
+**REQUIRED whenever this change touches a screen a person sees** — a dashboard file (`dashboard/**` code, styles, images and fonts, which includes the console the apps embed), the pairing pages (`dashboard-pair/**`), the public site's pages, components, layouts, styles or images (`site/src/{pages,components,layouts,styles}/**`, `site/public/**`), the feedback page (`feedback-front/public/**`), or an approval / secret-drop page. The pre-commit gate (`scripts/instar-dev-precommit.js` → `assertDelightTheUser`) refuses the commit unless this section carries a written answer AND names the screenshots; every named local screenshot file must exist at commit time, and a Before and its After must be two different pictures. Section 6b is the floor (reachable, plain, phone width); this is the bar above it: a person should enjoy looking at the screen (the 2026-11-18 Work Board card passed 6b and was still "pretty terrible").
+
+**Does the screen read at a glance, and would a person enjoy it?**
+
+Answer in writing against each check:
+
+1. **Clear visual hierarchy** — one thing is plainly first (the ask, the headline); size, weight and colour say what matters, instead of a wall of same-size text.
+2. **One obvious next action** — the main button is visible on arrival, full-size, with a whole label (no "…"); secondary actions are quieter.
+3. **Calm spacing and type** — room between groups, readable type, related things grouped, nothing crammed.
+4. **No internal ids or raw formatting** — no hashes, wait ids, UTC stamps, markdown escapes, enum values or ": not known" fragments as content; times read the way a person says them.
+5. **Polish matched across surfaces** — the same screen on Mac, iPhone, Android and the dashboard gets the same care; say which of them this change touches and how the others stay matched (the native apps live in their own repos and are held by their builders' review against this same list).
+
+[Your answer: what the screen looked like before, what changed, how it reads now against each check.]
+
+- Before: [path or link to a screenshot of the screen before this change, or "none — new screen: <why>"]
+- After: [path or link to a screenshot after this change; phone width where the screen is used on a phone]
+
+[Take each Before and its After at the same size and in the same state, and say which in your answer (for example "phone, 390 wide, card with three checklist rows"). A change to a phone layout needs its phone-width pair.]
+
+[One Before/After pair per screen the change touches, in order. Keep the pictures where the change's reviewer can open them, and attach them to the pull request. Capture secret-drop, approval and sign-in screens with inert fixture values only: never a live secret, token, one-time link or real person's data in a picture.]
+
+[A change that moves something on screen also needs a second reader: run the Phase 5 second-pass review on the pictures, write the trace with `--second-pass true --reviewer-concurred true`, and make the "Second-pass review" section below name each picture it looked at.]
+
+A screen this change removes: keep its Before picture and write `- After: none — screen removed: <why>`.
+
+When nothing a person sees changes (a data or wiring change inside a surface file, a lossless re-encode of an image), replace the two lines with:
+
+- Screenshots: no visible change — [what the change does and why nothing a person sees moves]
+
+---
+
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
 **When this agent runs on MORE THAN ONE machine, what is this feature's posture?**
