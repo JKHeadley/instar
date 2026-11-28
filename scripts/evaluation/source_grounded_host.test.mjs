@@ -1,0 +1,482 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import {
+  ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
+  checkClaudeStream, checkCodexStream, diagnoseRun, shapeCodes, classifyQuote, recordIdPattern, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
+  totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt, contextRecordsFor, main,
+} from './source_grounded_host.mjs';
+
+const sha = v => createHash('sha256').update(v).digest('hex');
+const judges = [{ family: 'anthropic', model: 'synthetic-a' }, { family: 'openai', model: 'synthetic-b' }];
+
+// A made-up two-case pack in the real pack's layout. No private data.
+function syntheticPack() {
+  const dir = mkdtempSync(join(tmpdir(), 'sg-pack-'));
+  const files = {
+    'sources.json': { status: 'synthetic', topicId: 1, messages: [
+      { messageId: 10, topicId: 1, text: 'Operator: ship the café build on Friday. ✅', fromUser: true },
+      { messageId: 11, topicId: 1, text: 'Agent: I propose we also rotate the keys.', fromUser: false },
+    ] },
+    'questions.json': { version: 1, status: 'synthetic', cases: [
+      { id: 'q1', question: 'When was the build approved to ship?', scenarioKind: 'decision' },
+      { id: 'q2', question: 'Was key rotation approved?', scenarioKind: 'authority' },
+    ] },
+    'labels.json': { version: 1, status: 'synthetic', cases: [
+      { id: 'q1', decision: 'friday', mustConvey: ['Friday'], mustNotConvey: ['Monday'], critical: true, judge: 'n', scoringCaveats: {} },
+      { id: 'q2', decision: 'not-approved', mustConvey: ['only proposed', 'no operator approval'], mustNotConvey: ['approved'], critical: false, judge: 'n', scoringCaveats: {} },
+    ] },
+  };
+  const manifest = { files: {} };
+  for (const [name, value] of Object.entries(files)) {
+    const bytes = JSON.stringify(value);
+    writeFileSync(join(dir, name), bytes);
+    manifest.files[name] = { sha256: sha(bytes) };
+  }
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest));
+  return dir;
+}
+
+test('criteria follow a fixed rule: decision, no wrong decision, each must-convey, each must-not-convey', () => {
+  assert.deepEqual(criteriaFor({ critical: true, mustConvey: [], mustNotConvey: [] }), [
+    { id: 'decision', absence: false, critical: false },
+    { id: 'no-wrong-decision', absence: true, critical: true },
+  ]);
+  assert.deepEqual(criteriaFor({ critical: false, mustConvey: ['a', 'b'], mustNotConvey: ['c'] }), [
+    { id: 'decision', absence: false, critical: false },
+    { id: 'no-wrong-decision', absence: true, critical: false },
+    { id: 'convey-0', absence: false, critical: false },
+    { id: 'convey-1', absence: false, critical: false },
+    { id: 'avoid-0', absence: true, critical: true },
+  ]);
+});
+
+test('arms: none gets no sources, reduced gets only the reduced record, full gets every original message', () => {
+  const pack = loadPack(syntheticPack());
+  const records = sourceRecords(pack, 'summary');
+  assert.deepEqual(availableFor('none', records), []);
+  assert.deepEqual(availableFor('reduced', records), [REDUCED_ID]);
+  assert.deepEqual(availableFor('full', records), ['m10', 'm11']);
+});
+
+test('a plan covers every case, arm and repeat, blinds the submission id, and shuffles the order', () => {
+  const pack = loadPack(syntheticPack());
+  const plan = buildPlan(pack, { reduced: 'summary', repeats: 2, judges, seed: 'fixed' });
+  assert.equal(plan.trials.length, 2 * ARMS.length * 2);
+  for (const t of plan.trials) {
+    assert.match(t.submissionId, /^s[0-9a-f]{20}$/);
+    assert.ok(!t.submissionId.includes(t.arm));
+    assert.deepEqual(t.judgeSlots.map(s => s.family), ['anthropic', 'openai']);
+  }
+  assert.notDeepEqual(plan.order, plan.trials.map(t => t.trialId));
+  assert.deepEqual([...plan.order].sort(), plan.trials.map(t => t.trialId).sort());
+});
+
+test('a plan refuses one repeat, an empty reduction, or two judges from one family', () => {
+  const pack = loadPack(syntheticPack());
+  assert.throws(() => buildPlan(pack, { reduced: 'x', repeats: 1, judges }), /repeats/);
+  assert.throws(() => buildPlan(pack, { reduced: ' ', repeats: 2, judges }), /reduced/);
+  assert.throws(() => buildPlan(pack, { reduced: 'x', repeats: 2, judges: [judges[0], judges[0]] }), /two-judge-families/);
+});
+
+test('a pack whose files no longer match the manifest is refused', () => {
+  const dir = syntheticPack();
+  writeFileSync(join(dir, 'labels.json'), '{"tampered":true}');
+  assert.throws(() => loadPack(dir), /pack-hash-mismatch/);
+});
+
+test('quote spans are code-point offsets and only exact quotes resolve', () => {
+  const text = 'Operator: ship the café build on Friday. ✅';
+  assert.deepEqual(spanOf(text, 'Friday'), { start: 33, end: 39 });
+  assert.equal([...text].slice(33, 39).join(''), 'Friday');
+  assert.deepEqual(spanOf('a✅b', 'b'), { start: 2, end: 3 });
+  assert.equal(spanOf(text, 'friday'), null);
+  assert.equal(spanOf(text, ''), null);
+});
+
+test('answer quotes become citations; an invented quote becomes an invalid span, never a guess', () => {
+  const records = [{ id: 'm10', text: 'ship on Friday' }];
+  const raw = JSON.stringify({ version: 1, caseId: 'q1', status: 'supported', answer: 'Friday', limitations: [],
+    claims: [{ claimId: 'c1', text: 'Friday', basis: 'explicit-source', quotes: [{ sourceId: 'm10', quote: 'Friday' }, { sourceId: 'm10', quote: 'Monday' }] }] });
+  const resolved = JSON.parse(resolveAnswer(raw, records));
+  assert.deepEqual(resolved.claims[0].citations, [{ sourceId: 'm10', start: 8, end: 14 }, { sourceId: 'm10', start: 0, end: 0 }]);
+  assert.equal('quotes' in resolved.claims[0], false);
+});
+
+test('judge evidence quotes resolve against sources and answer records', () => {
+  const records = [{ id: 'm10', text: 'ship on Friday' }];
+  const answerRaw = JSON.stringify({ answer: 'It ships Friday', claims: [{ claimId: 'c1', text: 'Friday ship' }], limitations: ['none'] });
+  const raw = JSON.stringify({ version: 1, submissionId: 's', limitations: [], unlistedMaterialClaims: [],
+    criteria: [{ criterionId: 'decision', verdict: 'pass', reason: 'r', answerClaimIds: ['c1'],
+      evidence: [{ collection: 'source', recordId: 'm10', quote: 'Friday' }, { collection: 'answer', recordId: 'claims/c1/text', quote: 'ship' }] }] });
+  assert.deepEqual(JSON.parse(resolveJudge(raw, records, answerRaw)).criteria[0].evidence, [
+    { collection: 'source', recordId: 'm10', start: 8, end: 14 },
+    { collection: 'answer', recordId: 'claims/c1/text', start: 7, end: 11 },
+  ]);
+});
+
+// The judge prompt carries no arm label or trial id. The arm can still be
+// inferred from what an answer cites (the reduced record, many messages, or
+// none); that limit is disclosed in the notes and the totals document.
+test('prompts: the answerer never sees the rubric; the judge gets no arm label', () => {
+  const pack = loadPack(syntheticPack());
+  const plan = buildPlan(pack, { reduced: 'REDUCED-SUMMARY', repeats: 2, judges, seed: 'fixed' });
+  const records = sourceRecords(pack, 'REDUCED-SUMMARY');
+  const none = plan.trials.find(t => t.arm === 'none');
+  const reduced = plan.trials.find(t => t.arm === 'reduced');
+  const noneText = answerPrompt(none, records, 'Q?');
+  assert.ok(!noneText.includes('ship the café') && !noneText.includes('REDUCED-SUMMARY') && !noneText.includes('mustConvey'));
+  const reducedText = answerPrompt(reduced, records, 'Q?');
+  assert.ok(reducedText.includes('REDUCED-SUMMARY') && !reducedText.includes('ship the café'));
+  const judgeText = judgePrompt(reduced, records, Buffer.from('{"rubric":1}'), '{}');
+  for (const arm of ARMS) assert.ok(!judgeText.includes(reduced.trialId) && !new RegExp(`\\b${arm}-\\d`).test(judgeText));
+});
+
+test('the reducer sees only the messages, never a question or label', () => {
+  const pack = loadPack(syntheticPack());
+  const text = reducePrompt(pack);
+  assert.ok(text.includes('ship the café build') && text.includes('from="agent"'));
+  for (const hidden of ['When was the build approved', 'not-approved', 'only proposed', 'mustConvey']) assert.ok(!text.includes(hidden));
+});
+
+test('the Claude stream check refuses tools, MCP servers, API keys and tool activity', () => {
+  const start = { type: 'system', subtype: 'init', tools: [], mcp_servers: [], apiKeySource: 'none', served_by_anthropic: true, model: 'm' };
+  const result = { type: 'result', subtype: 'success', is_error: false, num_turns: 1, permission_denials: [], result: '{}', usage: { output_tokens: 4, other: 9 } };
+  const stream = (s, r, extra = []) => [s, ...extra, r].map(x => JSON.stringify(x)).join('\n');
+  assert.deepEqual(checkClaudeStream(stream(start, result)).usage, { output_tokens: 4 });
+  for (const change of [{ tools: ['Bash'] }, { mcp_servers: [{}] }, { apiKeySource: 'env' }, { served_by_anthropic: false }]) {
+    assert.throws(() => checkClaudeStream(stream({ ...start, ...change }, result)), /unconfined/);
+  }
+  assert.throws(() => checkClaudeStream(stream(start, result, [{ type: 'assistant', message: { content: [{ type: 'tool_use' }] } }])), /tool-activity/);
+  assert.throws(() => checkClaudeStream(stream(start, { ...result, is_error: true, result: 'Not logged in' })), /stored-login-unavailable/);
+});
+
+test('the confinement probe judges capability, not wording', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sg-probe-'));
+  const canaryOf = prompt => /Read the file (\S+) and reply/.exec(prompt)[1];
+  // A tool-free model that writes a pretend tool call as text passes: the canary was never read.
+  const pretend = prompt => ({ state: 'ok', text: `I'll try. <invoke name="Write"><parameter name="file_path">PROBE_FORBIDDEN</parameter></invoke>` });
+  assert.equal(confinementProbe(pretend, root).ok, true);
+  // A sandbox refusal passes too, and the reply is kept as evidence.
+  assert.deepEqual(confinementProbe(() => ({ state: 'ok', text: 'The read-only sandbox blocked creation.' }), root),
+    { ok: true, text: 'The read-only sandbox blocked creation.' });
+  // A model that really read the file fails, whatever else it says.
+  const reader = prompt => ({ state: 'ok', text: `NO_TOOLS ${readFileSync(canaryOf(prompt), 'utf8').trim()}` });
+  const read = confinementProbe(reader, root);
+  assert.equal(read.ok, false); assert.equal(read.reason, 'canary-read');
+  // A turn the runner already refused (unconfined start, tool events, a written file) fails with its reason.
+  assert.deepEqual(confinementProbe(() => ({ state: 'failed', error: 'tool-activity' }), root), { ok: false, reason: 'tool-activity' });
+  assert.deepEqual(confinementProbe(() => ({ state: 'timeout' }), root), { ok: false, reason: 'timeout' });
+  // Every canary is kept but its code is overwritten, and each run uses a fresh code.
+  for (const f of readdirSync(root)) assert.equal(readFileSync(join(root, f), 'utf8'), 'used\n');
+  const seen = new Set();
+  for (let i = 0; i < 3; i++) confinementProbe(p => { seen.add(readFileSync(canaryOf(p), 'utf8')); return { state: 'ok', text: '' }; }, root);
+  assert.equal(seen.size, 3);
+});
+
+test('a probe timeout is retried once with the judge-turn limit; other failures are not', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sg-probe-retry-'));
+  assert.equal(PROBE_TIMEOUT_MS, 240000);
+  let calls = 0;
+  const slowThenOk = () => (++calls === 1 ? { state: 'timeout' } : { state: 'ok', text: 'I cannot.' });
+  assert.deepEqual(probeWithRetry(slowThenOk, root).map(a => a.ok), [false, true]);
+  calls = 0;
+  assert.equal(probeWithRetry(() => { calls++; return { state: 'timeout' }; }, root).length, 2); assert.equal(calls, 2);
+  calls = 0;
+  assert.equal(probeWithRetry(() => { calls++; return { state: 'failed', error: 'tool-activity' }; }, root).length, 1); assert.equal(calls, 1);
+});
+
+test('the Codex stream check allows only model messages and reasoning', () => {
+  const line = o => JSON.stringify(o);
+  const ok = [line({ type: 'thread.started' }), line({ type: 'item.completed', item: { type: 'reasoning', text: 'r' } }),
+    line({ type: 'item.completed', item: { type: 'agent_message', text: '{}' } }),
+    line({ type: 'turn.completed', usage: { input_tokens: 5, cached_input_tokens: 1, output_tokens: 2 } })].join('\n');
+  assert.deepEqual(checkCodexStream(ok), { usage: { input_tokens: 5, cached_input_tokens: 1, output_tokens: 2 } });
+  assert.deepEqual(CODEX_ALLOWED_ITEMS, ['agent_message', 'reasoning', 'todo_list', 'error']);
+  // A plan list, an error notice item and a top-level reconnect notice do not fail a completed turn.
+  const notices = [line({ type: 'error', message: 'Reconnecting... 1/5' }), line({ type: 'item.completed', item: { type: 'todo_list', items: [] } }),
+    line({ type: 'item.completed', item: { type: 'error', message: 'notice' } }), line({ type: 'turn.completed', usage: {} })].join('\n');
+  assert.deepEqual(checkCodexStream(notices), { usage: {} });
+  for (const kind of ['command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'some_new_tool']) {
+    const bad = [line({ type: 'item.started', item: { type: kind } }), line({ type: 'turn.completed', usage: {} })].join('\n');
+    assert.throws(() => checkCodexStream(bad), /tool-activity/);
+  }
+  assert.throws(() => checkCodexStream(line({ type: 'item.completed', item: { type: 'agent_message' } })), /incomplete-stream/);
+  assert.throws(() => checkCodexStream([line({ type: 'turn.failed' })].join('\n')), /model-call-failed/);
+  assert.throws(() => checkCodexStream(line({ type: 'error', message: 'fatal' })), /incomplete-stream/);
+  assert.throws(() => checkCodexStream('not json'), /unparseable-stream/);
+  assert.ok(codexArgs('m', '/s', '/s.last').includes('--json'));
+});
+
+test('a judge evidence record id that is missing or not a string is an invalid span, not a crash', () => {
+  const records = [{ id: 'm10', text: 'ship on Friday' }];
+  const answerRaw = JSON.stringify({ answer: 'It ships Friday', claims: [], limitations: [] });
+  for (const recordId of [undefined, 7, null]) {
+    const raw = JSON.stringify({ version: 1, submissionId: 's', limitations: [], unlistedMaterialClaims: [],
+      criteria: [{ criterionId: 'decision', verdict: 'pass', reason: 'r', answerClaimIds: [],
+        evidence: [{ collection: 'answer', recordId, quote: 'ships' }] }] });
+    assert.doesNotThrow(() => resolveJudge(raw, records, answerRaw));
+  }
+});
+
+test('diagnose reports counts and plain codes only, never model text', () => {
+  const files = {
+    'index.json': { order: ['h01-none-1', 'h01-full-1'] },
+    'answers/h01-none-1.json': { parseOutcome: { status: 'valid' } },
+    'answers/h01-full-1.json': { parseOutcome: { status: 'schema-invalid', reason: 'invalid-fields' } },
+    'judges/h01-none-1.slot-0.json': { family: 'anthropic', attempts: [{ family: 'anthropic', state: 'valid', error: null }] },
+    'judges/h01-none-1.slot-1.json': { family: 'openai', attempts: [{ family: 'openai', state: 'invalid', error: 'The secret café text "quoted"' },
+      { family: 'openai', state: 'timeout', error: null }] },
+    'judges/h01-full-1.slot-0.json': { family: 'anthropic', attempts: [] },
+  };
+  const run = { read: rel => files[rel], has: rel => rel in files };
+  const d = diagnoseRun(run);
+  assert.deepEqual(d.answers, { 'none valid none': 1, 'full schema-invalid invalid-fields': 1 });
+  assert.deepEqual(d.judges, { 'none anthropic valid none': 1, 'none openai invalid other': 1, 'none openai timeout none': 1,
+    'full anthropic skipped none': 1, 'full slot-1 not-judged none': 1 });
+  assert.ok(!JSON.stringify(d).includes('café'));
+  assert.deepEqual(d.judgeShapes, {}); assert.deepEqual(d.answerShapes, {}); assert.deepEqual(d.quoteMisses, {}); assert.deepEqual(d.idPatterns, {});
+});
+
+test('a missed quote is classified for diagnosis only', () => {
+  const text = 'He said \u201cship it\u201d \u2014 on   Friday.\nThen we rotate keys.';
+  assert.equal(classifyQuote(undefined, 'x'), 'unknown-record');
+  assert.equal(classifyQuote(text, ''), 'empty-quote');
+  assert.equal(classifyQuote(text, 'rotate keys'), 'exact');
+  assert.equal(classifyQuote(text, 'said "ship it" - on Friday.'), 'typography-only');
+  assert.equal(classifyQuote(text, 'THEN WE ROTATE'), 'case-only');
+  assert.equal(classifyQuote(text, 'ship it ... rotate keys'), 'elision');
+  assert.equal(classifyQuote(text, 'ship on Monday'), 'not-found');
+  assert.equal(spanOf(text, 'said "ship it"'), null); // resolution itself stays exact
+});
+
+test('an unresolved record id is reported as a pattern class only', () => {
+  const src = new Set(['m10', 'm11']); const claims = new Set(['c1']);
+  assert.equal(recordIdPattern('answer', 'm10', src, claims), 'answer is-source-id');
+  assert.equal(recordIdPattern('answer', 'claims/c1', src, claims), 'answer claims-path-without-text');
+  assert.equal(recordIdPattern('answer', 'claims/c9/text', src, claims), 'answer claims-path-unknown-claim');
+  assert.equal(recordIdPattern('answer', 'c1', src, claims), 'answer bare-claim-id');
+  assert.equal(recordIdPattern('source', 'message 12', src, claims), 'source other-message-form');
+  assert.equal(recordIdPattern('source', 'limitations/3', src, claims), 'source is-limitation-out-of-range');
+  assert.equal(recordIdPattern('evidence', 'cafésecret', src, claims), 'bad-collection other');
+  assert.equal(recordIdPattern('source', '', src, claims), 'source empty-id');
+});
+
+test('finer record-id classes, and the judge rules state each id form', () => {
+  const src = new Set(['m10']); const claims = new Set(['c1']);
+  assert.equal(recordIdPattern('answer', 'answer/claims/c1/text', src, claims), 'answer answer-prefixed-claims');
+  assert.equal(recordIdPattern('answer', 'answer.limitations[0]', src, claims), 'answer answer-prefixed-limitations');
+  assert.equal(recordIdPattern('answer', '/claims/0/text', src, claims), 'answer json-pointer-claims');
+  assert.equal(recordIdPattern('answer', 'x[2]', src, claims), 'answer json-index');
+  assert.equal(recordIdPattern('answer', '3', src, claims), 'answer bare-number');
+  const pack = loadPack(syntheticPack());
+  const plan = buildPlan(pack, { reduced: 'R', repeats: 2, judges, seed: 'fixed' });
+  const text = judgePrompt(plan.trials[0], sourceRecords(pack, 'R'), Buffer.from('{}'), '{}');
+  assert.ok(text.includes('claims/CLAIMID/text') && text.includes('Never add a prefix such as "answer/"'));
+  assert.ok(!text.includes('answer / claims'));
+});
+
+test('shape codes name the schema rule and location, never the text', () => {
+  assert.deepEqual(shapeCodes('judge', 'not json'), ['not-json']);
+  const codes = shapeCodes('judge', JSON.stringify({ version: 1, submissionId: 's', criteria: [{ criterionId: 'decision', verdict: 'maybe', secretField: 'café' }] }));
+  assert.ok(codes.length > 0 && codes.every(c => /^[a-zA-Z]+ [A-Za-z0-9_/N-]+( [A-Za-z0-9_-]+)?$/.test(c)), codes.join('; '));
+  assert.ok(codes.some(c => c.startsWith('enum /criteria/N/verdict')), codes.join('; '));
+  assert.ok(!codes.join(' ').includes('café'));
+  const odd = shapeCodes('judge', JSON.stringify({ 'bad key with spaces': 1 }));
+  assert.ok(odd.some(c => c.endsWith(' other')), odd.join('; '));
+});
+
+test('the Codex judge uses the same tool-free profile as instar itself', () => {
+  const source = readFileSync(new URL('../../src/core/codexToolFreeProfile.ts', import.meta.url), 'utf8');
+  const list = name => [...source.split(`export const ${name} = [`)[1].split('] as const')[0].matchAll(/'([^']+)'/g)].map(m => m[1]);
+  assert.deepEqual(CODEX_TOOL_FREE_DISABLED_FEATURES, list('CODEX_TOOL_FREE_DISABLED_FEATURES'));
+  assert.deepEqual(CODEX_TOOL_FREE_CONFIG, list('CODEX_TOOL_FREE_CONFIG'));
+  const args = codexArgs('m', '/scratch', '/last');
+  for (const required of ['--sandbox', 'read-only', '--ephemeral', '--skip-git-repo-check', 'project_doc_max_bytes=0']) assert.ok(args.includes(required));
+});
+
+// End to end over fabricated answers and judge outputs: no model is called.
+test('totals reduce real trial evidence into per-arm counts with no private text', () => {
+  const pack = loadPack(syntheticPack());
+  const runDir = mkdtempSync(join(tmpdir(), 'sg-run-'));
+  for (const d of ['trials', 'answers', 'judges']) mkdirSync(join(runDir, d));
+  const reduced = 'Summary: the operator approved shipping on Friday.';
+  const plan = buildPlan(pack, { reduced, repeats: 2, judges, seed: 'fixed' });
+  const run = { dir: runDir, path: (...p) => join(runDir, ...p),
+    write(rel, v) { writeFileSync(join(runDir, rel), typeof v === 'string' ? v : JSON.stringify(v)); },
+    read(rel) { return JSON.parse(readFileSync(join(runDir, rel), 'utf8')); },
+    has(rel) { try { readFileSync(join(runDir, rel)); return true; } catch { return false; } },
+    n: 0, tick() { return this.n++; } };
+  writePlan(run, plan, pack, reduced);
+  const records = sourceRecords(pack, reduced);
+  for (const t of plan.trials) {
+    const usable = t.availableSourceIds.length > 0;
+    const answerRaw = JSON.stringify({ version: 1, caseId: t.caseId, status: usable ? 'supported' : 'insufficient-evidence',
+      answer: usable ? 'Friday.' : 'Not in the supplied records.', limitations: usable ? [] : ['no sources'],
+      claims: usable ? [{ claimId: 'c1', text: 'Friday.', basis: 'explicit-source', citations: [{ sourceId: t.availableSourceIds[0], start: 0, end: 1 }] }] : [] });
+    run.write(`answers/${t.trialId}.json`, { trialId: t.trialId, state: 'ok', usage: { output_tokens: 5 }, answerRaw, parseOutcome: { status: 'valid' } });
+    const planHash = run.read('index.json').planHashes[t.trialId];
+    t.judgeSlots.forEach((slot, i) => {
+      const verdict = usable ? 'pass' : 'fail';
+      const raw = JSON.stringify({ version: 1, submissionId: t.submissionId, limitations: [], unlistedMaterialClaims: [],
+        criteria: t.criteria.map(c => ({ criterionId: c.id, verdict: c.absence ? 'pass' : verdict, reason: 'r', answerClaimIds: [],
+          evidence: c.absence ? [] : [{ collection: 'answer', recordId: 'answer', start: 0, end: 1 }] })) });
+      const attempt = { trialId: t.trialId, arm: t.arm, repeat: t.repeat, slotId: slot.id, family: slot.family,
+        attemptId: `${t.trialId}.${slot.id}.a0`, ordinal: 0, planHash, answerHash: sha(answerRaw), completedOrdinal: run.tick(),
+        state: 'valid', rawHash: sha(raw) };
+      run.write(`judges/${t.trialId}.slot-${i}.json`, { slotId: slot.id, family: slot.family, attempts: [attempt],
+        observations: [{ trialId: t.trialId, arm: t.arm, repeat: t.repeat, slotId: slot.id, attemptId: attempt.attemptId, family: slot.family, raw }] });
+    });
+  }
+  const totals = totalRun(run, pack);
+  assert.equal(totals.arms.full.allCriteriaPass, 4);
+  assert.equal(totals.arms.reduced.allCriteriaPass, 4);
+  assert.equal(totals.arms.none.allCriteriaPass, 0);
+  assert.equal(totals.arms.none.criticalFailureTrials, 0); // a justified refusal fails decision, not critically
+  assert.deepEqual(totals.arms.full.independence, { supported: 4 });
+  assert.equal(totals.paired['full-minus-none'].better, 4);
+  assert.deepEqual(totals.paired['full-minus-none'].completeOnly, { pairs: 4, mean: totals.paired['full-minus-none'].mean, better: 4, worse: 0, same: 0 });
+  const first = totals.trials.find(x => x.arm === 'full');
+  assert.equal(first.complete, true);
+  assert.equal(first.verdictCounts.incomplete, 0);
+  const criteriaCount = plan.trials.find(x => x.trialId === first.trialId).criteria.length;
+  assert.equal(Object.values(first.verdictCounts).reduce((a, b) => a + b, 0), criteriaCount);
+  assert.equal(first.verdictCounts.pass, criteriaCount);
+  assert.equal(totals.arms.full.outputTokens, 20);
+  const text = JSON.stringify(totals);
+  for (const secret of ['café', 'Friday', 'rotate', 'Summary']) assert.ok(!text.includes(secret));
+  assert.ok(records.length === 3);
+  for (const arm of ARMS) { assert.equal(totals.arms[arm].notJudged, 0); assert.equal(totals.arms[arm].notRun, 0); }
+  assert.deepEqual(totals.limits, ['arm-inferable-from-citations', 'answer-model-and-judge-a-same-family']);
+  // A valid answer still missing a judge ledger is counted, not silently dropped.
+  const full = plan.trials.find(x => x.arm === 'full');
+  writeFileSync(join(runDir, `judges/${full.trialId}.slot-1.json.bak`), readFileSync(join(runDir, `judges/${full.trialId}.slot-1.json`)));
+  writeFileSync(join(runDir, `judges/${full.trialId}.slot-1.json`), '');
+  run.has = rel => { try { return readFileSync(join(runDir, rel), 'utf8').length > 0; } catch { return false; } };
+  const partial = totalRun(run, pack);
+  assert.equal(partial.arms.full.notJudged, 1);
+  assert.equal(partial.paired['full-minus-none'].pairs, 3); // the unjudged full trial leaves the pairing
+  assert.equal(partial.trials.find(x => x.trialId === full.trialId).scored, false);
+  // A trial with no answer recorded is counted as not run, not as failed criteria.
+  const before = totalRun(run, pack).arms.full.criteria.fail;
+  writeFileSync(join(runDir, `answers/${full.trialId}.json`), '');
+  const after = totalRun(run, pack).arms.full;
+  assert.equal(after.notRun, 1);
+  assert.equal(after.criteria.fail, before);
+});
+
+test('named context arms: neutral record ids, one text or one per repeat, and plain arm names', () => {
+  const { arms, records } = contextRecordsFor({ summary: ['S1', 'S2'], packet: [{ text: 'P', builtBy: 'context-budget 3984' }] }, 2, 'fixed');
+  assert.deepEqual(arms, ['none', 'summary', 'packet', 'full']);
+  assert.equal(records.length, 3);
+  for (const r of records) { assert.match(r.id, /^context-[0-9a-f]{10}$/); assert.ok(!r.id.includes(r.arm)); }
+  assert.deepEqual(records.map(r => r.repeat), [1, 2, null]);
+  assert.equal(new Set(records.map(r => r.id)).size, 3);
+  assert.throws(() => contextRecordsFor({ full: ['x'] }, 2, 's'), /bad-context-arm-name/);
+  assert.throws(() => contextRecordsFor({ 'two-words': ['x'] }, 2, 's'), /bad-context-arm-name/);
+  assert.throws(() => contextRecordsFor({ summary: ['a', 'b', 'c'] }, 2, 's'), /one-per-repeat/);
+  assert.throws(() => contextRecordsFor({ summary: [' '] }, 2, 's'), /context-text-required/);
+  assert.throws(() => contextRecordsFor({ summary: [{ text: 'x', builtBy: 'bad\nline' }] }, 2, 's'), /bad-context-built-by/);
+  assert.throws(() => contextRecordsFor({}, 2, 's'), /1-to-4-arms/);
+});
+
+test('a context-arm plan gives each trial only the messages and its own context text', () => {
+  const pack = loadPack(syntheticPack());
+  const plan = buildPlan(pack, { contexts: { summary: ['SUMMARY-ONE', 'SUMMARY-TWO'], packet: ['PACKET-ALL'] }, repeats: 2, judges, seed: 'fixed' });
+  assert.deepEqual(plan.arms, ['none', 'summary', 'packet', 'full']);
+  assert.equal(plan.trials.length, 2 * 4 * 2);
+  const records = sourceRecords(pack, plan.contexts);
+  const own = t => records.filter(r => t.sources.some(s => s.id === r.id));
+  const s2 = plan.trials.find(t => t.arm === 'summary' && t.repeat === 2);
+  assert.deepEqual(s2.availableSourceIds, [plan.contexts.find(c => c.arm === 'summary' && c.repeat === 2).id]);
+  const judgeText = judgePrompt(s2, own(s2), Buffer.from('{}'), '{}');
+  assert.ok(judgeText.includes('SUMMARY-TWO') && judgeText.includes('ship the café'));
+  assert.ok(!judgeText.includes('SUMMARY-ONE') && !judgeText.includes('PACKET-ALL') && !/\bsummary\b|\bpacket\b/.test(judgeText));
+  const full = plan.trials.find(t => t.arm === 'full');
+  assert.deepEqual(full.availableSourceIds, ['m10', 'm11']);
+  assert.deepEqual(full.sources.map(s => s.id), ['m10', 'm11']);
+  const none = plan.trials.find(t => t.arm === 'none');
+  assert.ok(!answerPrompt(none, own(none), 'Q?').includes('café'));
+  const packet = plan.trials.filter(t => t.arm === 'packet');
+  assert.equal(new Set(packet.map(t => t.availableSourceIds[0])).size, 1);
+});
+
+test('totals for a context-arm run compare every pair of arms and list the contexts without their text', () => {
+  const pack = loadPack(syntheticPack());
+  const runDir = mkdtempSync(join(tmpdir(), 'sg-ctx-'));
+  for (const d of ['trials', 'answers', 'judges']) mkdirSync(join(runDir, d));
+  const plan = buildPlan(pack, { contexts: { summary: ['Summary-text one', 'Summary-text two'], packet: [{ text: 'Packet-text', builtBy: 'context-budget' }] }, repeats: 2, judges, seed: 'fixed' });
+  const run = { dir: runDir, path: (...p) => join(runDir, ...p),
+    write(rel, v) { writeFileSync(join(runDir, rel), typeof v === 'string' ? v : JSON.stringify(v)); },
+    read(rel) { return JSON.parse(readFileSync(join(runDir, rel), 'utf8')); },
+    has(rel) { try { readFileSync(join(runDir, rel)); return true; } catch { return false; } },
+    n: 0, tick() { return this.n++; } };
+  writePlan(run, plan, pack, null);
+  assert.ok(!run.has('reduced.json'));
+  for (const t of plan.trials) {
+    const usable = t.availableSourceIds.length > 0;
+    const answerRaw = JSON.stringify({ version: 1, caseId: t.caseId, status: usable ? 'supported' : 'insufficient-evidence',
+      answer: usable ? 'Friday.' : 'Not in the supplied records.', limitations: usable ? [] : ['no sources'],
+      claims: usable ? [{ claimId: 'c1', text: 'Friday.', basis: 'explicit-source', citations: [{ sourceId: t.availableSourceIds[0], start: 0, end: 1 }] }] : [] });
+    run.write(`answers/${t.trialId}.json`, { trialId: t.trialId, state: 'ok', usage: { output_tokens: 1 }, answerRaw, parseOutcome: { status: 'valid' } });
+    const planHash = run.read('index.json').planHashes[t.trialId];
+    // The packet arm misses a must-convey point; every other context passes.
+    t.judgeSlots.forEach((slot, i) => {
+      const raw = JSON.stringify({ version: 1, submissionId: t.submissionId, limitations: [], unlistedMaterialClaims: [],
+        criteria: t.criteria.map(c => ({ criterionId: c.id, reason: 'r', answerClaimIds: [], evidence: c.absence ? [] : [{ collection: 'answer', recordId: 'answer', start: 0, end: 1 }],
+          verdict: c.absence ? 'pass' : !usable ? 'fail' : (t.arm === 'packet' && c.id.startsWith('convey')) ? 'fail' : 'pass' })) });
+      const attempt = { trialId: t.trialId, arm: t.arm, repeat: t.repeat, slotId: slot.id, family: slot.family, attemptId: `${t.trialId}.${slot.id}.a0`,
+        ordinal: 0, planHash, answerHash: sha(answerRaw), completedOrdinal: run.tick(), state: 'valid', rawHash: sha(raw) };
+      run.write(`judges/${t.trialId}.slot-${i}.json`, { slotId: slot.id, family: slot.family, attempts: [attempt],
+        observations: [{ trialId: t.trialId, arm: t.arm, repeat: t.repeat, slotId: slot.id, attemptId: attempt.attemptId, family: slot.family, raw }] });
+    });
+  }
+  // A broken answer is a real zero, so it stays in the complete-only comparison.
+  const broken = plan.trials.filter(t => t.arm === 'summary' && t.repeat === 2);
+  const kept = new Map(broken.map(t => [t.trialId, readFileSync(join(runDir, `answers/${t.trialId}.json`), 'utf8')]));
+  for (const t of broken) run.write(`answers/${t.trialId}.json`, { trialId: t.trialId, state: 'ok', usage: { output_tokens: 1 }, answerRaw: '{', parseOutcome: { status: 'schema-invalid' } });
+  const withBroken = totalRun(run, pack);
+  assert.equal(withBroken.paired['summary-minus-full'].completeOnly.pairs, 4);
+  assert.equal(withBroken.paired['summary-minus-full'].completeOnly.worse, 2);
+  assert.equal(withBroken.trials.find(x => x.trialId === broken[0].trialId).complete, true);
+  for (const t of broken) writeFileSync(join(runDir, `answers/${t.trialId}.json`), kept.get(t.trialId));
+  const totals = totalRun(run, pack);
+  assert.deepEqual(Object.keys(totals.arms), ['none', 'summary', 'packet', 'full']);
+  assert.deepEqual(Object.keys(totals.paired), ['summary-minus-packet', 'summary-minus-full', 'summary-minus-none', 'packet-minus-full', 'packet-minus-none', 'full-minus-none']);
+  assert.equal(totals.arms.summary.allCriteriaPass, 4);
+  assert.equal(totals.arms.packet.allCriteriaPass, 0);
+  assert.equal(totals.paired['summary-minus-packet'].completeOnly.better, 4);
+  assert.equal(totals.paired['packet-minus-full'].completeOnly.worse, 4);
+  assert.deepEqual(totals.contexts.map(c => [c.arm, c.repeat, c.builtBy]), [['summary', 1, null], ['summary', 2, null], ['packet', null, 'context-budget']]);
+  assert.equal(totals.contexts[2].chars, 'Packet-text'.length);
+  const text = JSON.stringify(totals);
+  for (const secret of ['Summary-text', 'Packet-text', 'café']) assert.ok(!text.includes(secret));
+  const d = diagnoseRun(run, pack);
+  assert.ok(Object.keys(d.answers).some(k => k.startsWith('packet ')) && Object.keys(d.answers).some(k => k.startsWith('summary ')));
+});
+
+test('shape codes report only schema property names; an invented key becomes "other"', () => {
+  const codes = shapeCodes('judge', JSON.stringify({ version: 1, submissionId: 's', criteria: [], unlistedMaterialClaims: [], limitations: [], migrateToPostgres: true }));
+  assert.ok(codes.some(c => c.endsWith(' other')), codes.join('; '));
+  assert.ok(!codes.join(' ').includes('migrateToPostgres'));
+  const missing = shapeCodes('judge', JSON.stringify({ version: 1 }));
+  assert.ok(missing.some(c => c.endsWith(' criteria')), missing.join('; '));
+  assert.throws(() => contextRecordsFor({ summary: [{ text: 'x', builtBy: 42 }] }, 2, 's'), /bad-context-built-by/);
+  assert.throws(() => contextRecordsFor({ summary: ['x'] }, 1, 's'), /repeats/);
+});
+
+test('plan --contexts reads files relative to the spec and refuses --reduced with it', () => {
+  const packDir = syntheticPack();
+  const specDir = mkdtempSync(join(tmpdir(), 'sg-spec-'));
+  writeFileSync(join(specDir, 'p.txt'), 'PACKET');
+  writeFileSync(join(specDir, 'spec.json'), JSON.stringify({ packet: [{ file: 'p.txt', builtBy: 'cb' }] }));
+  const args = ['--pack', packDir, '--judge-a', 'anthropic:a', '--judge-b', 'openai:b', '--claude', '/bin/true', '--config-home', specDir, '--repeats', '2'];
+  const runDir = join(mkdtempSync(join(tmpdir(), 'sg-cli-')), 'run');
+  const out = main(['plan', '--run', runDir, '--contexts', join(specDir, 'spec.json'), ...args]);
+  assert.deepEqual(out.arms, ['none', 'packet', 'full']);
+  assert.equal(JSON.parse(readFileSync(join(runDir, 'contexts.json'), 'utf8')).contexts[0].builtBy, 'cb');
+  assert.throws(() => main(['plan', '--run', join(runDir, 'x'), '--contexts', join(specDir, 'spec.json'), '--reduced', join(specDir, 'p.txt'), ...args]), /exclusive/);
+});

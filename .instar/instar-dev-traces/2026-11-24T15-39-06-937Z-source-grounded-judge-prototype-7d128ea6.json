@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "source-grounded-judge-prototype",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-24T15:39:06.937Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "artifactSha256": "eb20fa4eb8b59cae924ccb4aaf400be4bd43122a31fb45f3740652e0e6d902f6",
+  "coveredFiles": [
+    "scripts/evaluation/source_grounded_flow.test.mjs",
+    "scripts/evaluation/source_grounded_judge_slots.mjs",
+    "scripts/evaluation/source_grounded_real_validator.check.mjs",
+    "scripts/evaluation/source_grounded_trial_inputs.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Internal offline research results only, with no production consumer.",
+  "eli16Path": "docs/eli16/source-grounded-judge-prototype.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

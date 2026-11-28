@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "context-public-replay-capture",
+  "sessionId": "unknown",
+  "timestamp": "2026-11-26T19:23:39.681Z",
+  "artifactPath": "upgrades/side-effects/context-public-replay-capture.md",
+  "artifactSha256": "4b4cdba45ee2a7b452e155a75d36025e802e5e6ed58192a7750b55531733ac4d",
+  "coveredFiles": [
+    "scripts/evaluation/context_replay_capture.py",
+    "tests/context-replay/test_context_replay_capture.py"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Explicit reversible synthetic development adapter using the existing hardened Claude transport settings, with no runtime callers.",
+  "eli16Path": "docs/eli16/context-public-replay-capture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/context-public-replay-capture.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

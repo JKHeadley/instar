@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T19:26:45.714Z",
+  "slug": "context-public-replay-capture",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 125,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/evaluation/context_replay_capture.py"
+    ],
+    "addedLines": 125,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

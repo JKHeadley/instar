@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "context-replay-runner-audit",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-25T17:09:02.639Z",
+  "artifactPath": "upgrades/side-effects/context-replay-runner-audit.md",
+  "artifactSha256": "56a3f876f70451ac48be507fa14fc4d6f20b7629a123f2cd93ce471c48ee7029",
+  "coveredFiles": [
+    "scripts/evaluation/context_replay.py"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Exact replay of the existing offline, data-only runner for audit coverage. No production entry point or runtime change is being added to the candidate.",
+  "eli16Path": "docs/eli16/context-replay-runner-audit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/context-replay-runner-audit.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

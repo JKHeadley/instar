@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "source-grounded-host",
+  "sessionId": "94098f3a-0116-4ccc-9d5d-e425c8c7fde2",
+  "timestamp": "2026-11-27T14:13:10.659Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-host.md",
+  "artifactSha256": "bd05ee7ae23d293c9125f8bf60ee1f9d1e2ece594681dbd17702580aff081797",
+  "coveredFiles": [
+    "docs/eli16/source-grounded-host.eli16.md",
+    "scripts/evaluation/source_grounded_host.mjs",
+    "scripts/evaluation/source_grounded_host.test.mjs",
+    "upgrades/side-effects/source-grounded-host.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Benchmark tool only: second-pass review fixes; no runtime path changes",
+  "eli16Path": "docs/eli16/source-grounded-host.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-host.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

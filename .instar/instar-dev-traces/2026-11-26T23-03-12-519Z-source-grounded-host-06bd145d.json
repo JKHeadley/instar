@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "source-grounded-host",
+  "sessionId": "712988c9-8dbe-4c51-bb01-0832426234b9",
+  "timestamp": "2026-11-26T23:03:12.519Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-host.md",
+  "artifactSha256": "944d8f494233495512f9a798c58751a2aafd305b30c9f3a00f9da0f2494a3675",
+  "coveredFiles": [
+    "scripts/evaluation/source_grounded_host.mjs",
+    "scripts/evaluation/source_grounded_host.test.mjs",
+    "tests/unit/evaluation-node-tests.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Manual evaluation tool with no runtime callers; reuses the existing confined Claude settings and instar's tool-free Codex profile; the frozen scoring modules are unchanged.",
+  "eli16Path": "docs/eli16/source-grounded-host.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-host.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

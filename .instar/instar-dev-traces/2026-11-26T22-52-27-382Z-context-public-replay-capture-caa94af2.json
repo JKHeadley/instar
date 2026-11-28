@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "context-public-replay-capture",
+  "sessionId": "712988c9-8dbe-4c51-bb01-0832426234b9",
+  "timestamp": "2026-11-26T22:52:27.382Z",
+  "artifactPath": "upgrades/side-effects/context-public-replay-capture.md",
+  "artifactSha256": "23cf95e2887ef834534460d3be901422948ee0f79d084b7352279c16559d2e88",
+  "coveredFiles": [
+    "scripts/evaluation/context_replay_capture.py",
+    "tests/context-replay/test_context_replay_capture.py"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds a per-answer parse outcome field to the existing manual synthetic capture adapter; no runtime callers, grader ignores the field.",
+  "eli16Path": "docs/eli16/context-public-replay-capture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/context-public-replay-capture.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
