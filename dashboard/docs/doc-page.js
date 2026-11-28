@@ -774,7 +774,8 @@ function threadCard(c, { inSheet = false } = {}) {
 
   const actions = el('div', { cls: 'actions' });
   const err = el('p', { cls: 'error', attrs: { role: 'alert' } });
-  if (!inSheet && page.version && Number.isInteger(c.start) && c.anchorState !== 'orphaned' && !c.resolved) {
+  const firstVisible = page.blocks?.[0];
+  if (!inSheet && page.version && firstVisible && Number.isInteger(c.start) && c.end > firstVisible.start && c.anchorState !== 'orphaned' && !c.resolved) {
     actions.appendChild(button('Show passage', () => showPassage(c.key), 'link-btn'));
   }
   // Not placed on this version: open the version it was made on, where it sits as highlighted.

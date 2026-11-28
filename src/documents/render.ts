@@ -166,3 +166,34 @@ export function renderTree(markdown: string, projectionVersion: number = PROJECT
   if (joined !== projectText(markdown, projectionVersion).text) throw new Error('render tree does not match the projection');
   return blocks;
 }
+
+
+/** The metadata convention for specs published as documents. Delimiters within the article are prose. */
+function leadingSettings(markdown: string): string | null {
+  const open = /^\uFEFF?---[ \t]*\r?\n/.exec(markdown);
+  if (!open) return null;
+  const rest = markdown.slice(open[0].length);
+  const close = /^---[ \t]*(?:\r?\n|$)/m.exec(rest);
+  if (!close) return null;
+  const lines = rest.slice(0, close.index).split(/\r?\n/);
+  const field = /^[A-Za-z][A-Za-z0-9_.-]*:(?:[ \t]|$)/;
+  let hasField = false;
+  for (const line of lines) {
+    if (field.test(line)) hasField = true;
+    else if (line.trim() && !line.trimStart().startsWith('#') && !(hasField && /^[ \t]/.test(line))) return null;
+  }
+  return hasField ? markdown.slice(0, open[0].length + close.index + close[0].length) : null;
+}
+
+/** Page presentation only. Keep v1 projection offsets and existing comment anchors intact. */
+export function renderPageTree(markdown: string, projectionVersion: number = PROJECTION_VERSION): Block[] {
+  const blocks = renderTree(markdown, projectionVersion);
+  const settings = leadingSettings(markdown);
+  if (!settings) return blocks;
+  const prefix = projectText(settings, projectionVersion).text;
+  const bodyIndex = blocks.findIndex(block => block.end > prefix.length);
+  const settingsBlocks = bodyIndex === -1 ? blocks : blocks.slice(0, bodyIndex);
+  const projectedSettings = settingsBlocks.map(block => block.runs.map(run => run.text).join('')).join('\n');
+  if (projectedSettings !== prefix) return blocks;
+  return bodyIndex === -1 ? [] : blocks.slice(bodyIndex);
+}

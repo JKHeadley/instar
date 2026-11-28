@@ -1,6 +1,6 @@
 /** The render tree matches the projection character for character (spec §3.5, §3.6). */
 import { describe, expect, it } from 'vitest';
-import { renderTree } from '../../src/documents/render.js';
+import { renderPageTree, renderTree } from '../../src/documents/render.js';
 import { projectText } from '../../src/documents/projection.js';
 
 const CORPUS = [
@@ -24,6 +24,41 @@ describe('render tree', () => {
       for (const b of blocks) expect(b.end - b.start).toBe(b.runs.map((r) => r.text).join('').length);
     }
   });
+  it('omits leading settings from the page and preserves the body projection offsets', () => {
+    const md = '---\ntitle: Draft\nstatus: pending\nrequested-by: |\n  owner note\n---\n\n# Article\n\nSelect this sentence.';
+    const projection = projectText(md);
+    const body = renderPageTree(md);
+    expect(body.map(block => [block.kind, block.runs.map(run => run.text).join('')])).toEqual([
+      ['heading', 'Article'], ['paragraph', 'Select this sentence.'],
+    ]);
+    expect(body[0].start).toBe(projection.text.indexOf('Article'));
+    expect(projection.text.slice(body[1].start, body[1].end)).toBe('Select this sentence.');
+  });
+
+  it('keeps authored headings and prose outside leading settings', () => {
+    const md = 'Section heading\n---\n\nParagraph before a divider.\n\n---\n\nA heading\n===\n';
+    expect(renderPageTree(md).map(block => [block.kind, block.runs.map(run => run.text).join('')])).toEqual([
+      ['heading', 'Section heading'],
+      ['paragraph', 'Paragraph before a divider.'],
+      ['heading', 'A heading'],
+    ]);
+    expect(renderPageTree('---\ntitle: Draft\n---\n')).toEqual([]);
+  });
+
+  it('keeps leading blocks when a reference resolved in the full document changes the prefix', () => {
+    const md = '---\nnote: [read][ref]\n---\n\n# Article\n\nBody.\n\n[ref]: https://example.com\n';
+    const complete = renderTree(md);
+    expect(complete[0].runs.map(run => run.text).join('')).toBe('note: read');
+    expect(renderPageTree(md)).toEqual(complete);
+  });
+
+  it('handles CRLF and preserves the body offset when the settings are hidden', () => {
+    const md = '---\r\ntitle: Draft\r\n---\r\n\r\n# Article\r\n\r\nBody';
+    const [heading] = renderPageTree(md);
+    expect(heading.runs.map(run => run.text).join('')).toBe('Article');
+    expect(heading.start).toBe(projectText(md).text.indexOf('Article'));
+  });
+
   it('equals the projection on 400 random documents', () => {
     const r = rnd(42);
     for (let n = 0; n < 400; n++) {

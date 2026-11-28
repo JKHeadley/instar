@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "docs-readable-settings",
+  "sessionId": "f84816a2-2f4b-4710-a14b-20f51e9af624",
+  "timestamp": "2026-11-28T04:31:28.100Z",
+  "artifactPath": "upgrades/side-effects/docs-readable-settings.md",
+  "artifactSha256": "b4334b4505439c2086db61a35c6108c0524b8523b59073e678049e0646284f0b",
+  "specPath": "docs/specs/instar-document-viewer.md",
+  "coveredFiles": [
+    "dashboard/docs/doc-page-model.js",
+    "dashboard/docs/doc-page.js",
+    "src/documents/render.ts",
+    "src/server/documentPageRoutes.ts",
+    "tests/integration/documents-page.test.ts",
+    "tests/unit/documents-page-model.test.ts",
+    "tests/unit/documents-render.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The browser selection model and renderer must preserve the approved signed comment coordinate contract together.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
