@@ -10,12 +10,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { BackupManager } from '../../src/core/BackupManager.js';
+import { clearRestoreMarker, readRestoreMarker, restoreMarkerFile, writeRestoreMarker } from '../../src/core/restoreMarker.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { RecommendedServicesLedger, foldChoice, validateRow } from '../../src/recommended/RecommendedServicesLedger.js';
 import { RECOMMENDED_SERVICE_CATALOG, type CatalogRow } from '../../src/recommended/catalog.js';
 import {
   EVENT_FRESH_MS, PROBLEM_KINDS, REOFFER_DAILY_WINDOW_MS, REOFFER_PENDING_TTL_MS, cooloffMs, eventBlock, isDuplicateEvent,
-  findUnresolvedSecrets, nextReoffer, renderReoffer, type ReofferFacts,
+  ADDRESS_OUTAGE_WINDOW_MS, findUnresolvedSecrets, noteOutage, problemServices, serviceForProblem, nextReoffer, renderReoffer, type ReofferFacts,
 } from '../../src/recommended/reoffers.js';
 import {
   TranscriptionUnavailableError, registerVoiceUnreadableListener, reportVoiceUnreadable, transcribeAudioFileDetailed,
@@ -219,5 +221,66 @@ describe('secret-lost: finding a secret the config refers to but the store no lo
     expect(text).toContain("no vault holding a copy");
     expect(text).toContain('You said no to Bitwarden earlier');
     expect(text).toContain('at least 90 days');
+  });
+});
+
+describe('state-loss-risk: the restore marker', () => {
+  let d: string;
+  beforeEach(() => { d = fs.mkdtempSync(path.join(os.tmpdir(), 'rec-restore-')); });
+  afterEach(() => SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/recommended-services-reoffers.test.ts' }));
+
+  it('writes, reads and clears; a broken or absent marker is no restore', () => {
+    expect(readRestoreMarker(d)).toBeNull();
+    writeRestoreMarker(d, 'snap-9', () => new Date('2026-11-20T00:00:00Z'));
+    expect(readRestoreMarker(d)).toEqual({ at: '2026-11-20T00:00:00.000Z', snapshotId: 'snap-9' });
+    clearRestoreMarker(d);
+    expect(readRestoreMarker(d)).toBeNull();
+    fs.mkdirSync(path.dirname(restoreMarkerFile(d)), { recursive: true });
+    fs.writeFileSync(restoreMarkerFile(d), '{"at":"not a date","snapshotId":"x"}');
+    expect(readRestoreMarker(d)).toBeNull();
+    fs.writeFileSync(restoreMarkerFile(d), 'garbage');
+    expect(readRestoreMarker(d)).toBeNull();
+  });
+
+  it('a real restore leaves the marker, after the copy, so one inside the snapshot never wins', () => {
+    const m = new BackupManager(d, { enabled: true, maxSnapshots: 5, includeFiles: ['AGENT.md'] } as never);
+    fs.writeFileSync(path.join(d, 'AGENT.md'), 'me');
+    const snap = m.createSnapshot('manual');
+    m.restoreSnapshot(snap.id);
+    expect(readRestoreMarker(d)?.snapshotId).toBe(snap.id);
+  });
+
+  it('re-offers GitHub backup in fixed words', () => {
+    expect(PROBLEM_KINDS['state-loss-risk']!.service).toBe('github-state-backup');
+    const row = RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'github-state-backup')!;
+    expect(renderReoffer('state-loss-risk', row, { linkBase: null, choice: 'no', deliveredBefore: 0 })).toContain('no copy of my memory and settings anywhere else');
+  });
+});
+
+describe('address-repeatedly-down', () => {
+  const H = 60 * 60_000;
+  it('three outages inside a day are one problem, and the count starts over after it', () => {
+    let t: number[] = [];
+    let r = noteOutage(t, 0); t = r.times; expect(r.problem).toBe(false);
+    r = noteOutage(t, H); t = r.times; expect(r.problem).toBe(false);
+    r = noteOutage(t, 2 * H); expect(r.problem).toBe(true); expect(r.times).toEqual([]);
+  });
+
+  it('old outages fall out of the window, and odd values are ignored', () => {
+    const r = noteOutage([0, NaN, H], ADDRESS_OUTAGE_WINDOW_MS + 2 * H);
+    expect(r.problem).toBe(false);
+    expect(r.times).toEqual([ADDRESS_OUTAGE_WINDOW_MS + 2 * H]);
+    expect(noteOutage([5 * H, 6 * H], 0).times).toEqual([0]);
+  });
+
+  it('offers Tailscale first, Cloudflare once Tailscale is a yes or already re-offered, nothing once both are yes', () => {
+    const choice = (yes: string[]) => (s: string) => ({ choice: yes.includes(s) ? 'yes' : 'no', at: '2026-11-01T00:00:00Z' }) as never;
+    expect(problemServices('address-repeatedly-down')).toEqual(['tailscale', 'cloudflare-domain']);
+    expect(serviceForProblem('address-repeatedly-down', [], choice([]))).toBe('tailscale');
+    expect(serviceForProblem('address-repeatedly-down', [], choice(['tailscale']))).toBe('cloudflare-domain');
+    const spent = [{ state: 'offered', kind: 'address-repeatedly-down', service: 'tailscale' }] as never;
+    expect(serviceForProblem('address-repeatedly-down', spent, choice([]))).toBe('cloudflare-domain');
+    expect(serviceForProblem('address-repeatedly-down', [], choice(['tailscale', 'cloudflare-domain']))).toBeNull();
+    expect(serviceForProblem('voice-unreadable', spent, choice(['voice-transcription']))).toBe('voice-transcription');
   });
 });

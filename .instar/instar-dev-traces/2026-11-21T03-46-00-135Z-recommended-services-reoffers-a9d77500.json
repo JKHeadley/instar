@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "recommended-services-reoffers",
+  "sessionId": "3ecbfd9a-27d9-4dd2-a52f-7dd9341e50e9",
+  "timestamp": "2026-11-21T03:46:00.135Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-reoffers.md",
+  "artifactSha256": "a6ec763a7b282bee72988872046f73816d29d00dce45bf24454b741d211a7ad8",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "src/core/BackupManager.ts",
+    "src/core/restoreMarker.ts",
+    "src/data/awareness/recommended-services-reoffers.md",
+    "src/recommended/reoffers.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Rollout step 4 slice re-committed through the gate (originals bypassed it); content identical",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

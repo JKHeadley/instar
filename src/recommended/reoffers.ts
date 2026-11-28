@@ -39,16 +39,22 @@ export function cooloffMs(delivered: number): number {
 }
 
 export interface ProblemKind {
-  /** The service this kind re-offers. */
+  /** The service this kind re-offers (the first choice, when `alternate` is set). */
   service: string;
+  /**
+   * The service offered instead once `service` is already a yes, or this kind has already re-offered it
+   * (spec: "Tailscale, then Cloudflare if Tailscale is already `yes` or this kind already re-offered it").
+   */
+  alternate?: string;
   /** Why the agent is asking now, in fixed words. Never includes error text. */
   why: string;
 }
 
 /**
  * The real-problem table. Each kind is called only from its named source: `voice-unreadable` from the shared
- * transcription wrapper, `secret-lost` from the boot check over the loaded config. The other kinds in the spec's
- * table (`address-repeatedly-down`, `provider-exhausted`, `state-loss-risk`) join with their sources.
+ * transcription wrapper, `secret-lost` from the boot check over the loaded config, `state-loss-risk` from the restore marker
+ * read at start, `address-repeatedly-down` from the tunnel's own give-up transitions. `provider-exhausted` joins
+ * with its source and the fixed-template path it needs.
  */
 export const PROBLEM_KINDS: Readonly<Record<string, ProblemKind>> = {
   'voice-unreadable': {
@@ -58,6 +64,15 @@ export const PROBLEM_KINDS: Readonly<Record<string, ProblemKind>> = {
   'secret-lost': {
     service: 'bitwarden',
     why: "One of my saved passwords or keys is missing on this machine, and there's no vault holding a copy I could restore it from.",
+  },
+  'address-repeatedly-down': {
+    service: 'tailscale',
+    alternate: 'cloudflare-domain',
+    why: "My web address went down three times in the last day, and each time it didn't come back on its own, so you couldn't reach me from your phone.",
+  },
+  'state-loss-risk': {
+    service: 'github-state-backup',
+    why: "I was just restored from a snapshot kept on this same machine, and there's no copy of my memory and settings anywhere else. If this machine is lost, so is everything I know.",
   },
 };
 
@@ -82,6 +97,39 @@ export function findUnresolvedSecrets(config: unknown, maxDepth = 8): string[] {
 
 export function isProblemKind(kind: string): boolean {
   return Object.prototype.hasOwnProperty.call(PROBLEM_KINDS, kind);
+}
+
+/** The services a kind may re-offer. */
+export function problemServices(kind: string): string[] {
+  const k = PROBLEM_KINDS[kind];
+  return k ? [k.service, ...(k.alternate ? [k.alternate] : [])] : [];
+}
+
+/**
+ * Which service a new problem of this kind re-offers: the kind's first choice, or its alternate once the first is
+ * a yes or has already been re-offered for this kind. Null when the alternate is a yes too (nothing left to offer).
+ */
+export function serviceForProblem(kind: string, rows: readonly ReofferRow[], choice: (service: string) => EffectiveChoice): string | null {
+  const k = PROBLEM_KINDS[kind];
+  if (!k) return null;
+  if (!k.alternate) return k.service;
+  const firstSpent = choice(k.service).choice === 'yes' || rows.some((r) => r.state === 'offered' && r.kind === kind && r.service === k.service);
+  if (!firstSpent) return k.service;
+  return choice(k.alternate).choice === 'yes' ? null : k.alternate;
+}
+
+/** `address-repeatedly-down`: this many outages self-heal didn't resolve, within the window, is one problem. */
+export const ADDRESS_OUTAGES_THRESHOLD = 3;
+export const ADDRESS_OUTAGE_WINDOW_MS = DAY_MS;
+
+/**
+ * Adds one outage to the kept times (newest last, at most the threshold kept) and says whether the threshold is
+ * now met within the window. Pure, so the per-machine file stays a dumb list.
+ */
+export function noteOutage(times: readonly number[], nowMs: number): { times: number[]; problem: boolean } {
+  const kept = [...times.filter((t) => Number.isFinite(t) && nowMs - t < ADDRESS_OUTAGE_WINDOW_MS && t <= nowMs), nowMs].slice(-ADDRESS_OUTAGES_THRESHOLD);
+  const problem = kept.length >= ADDRESS_OUTAGES_THRESHOLD;
+  return { times: problem ? [] : kept, problem };
 }
 
 export interface ReofferFacts {
@@ -109,7 +157,7 @@ function liveReservations(rows: readonly ReofferRow[], nowMs: number): { deliver
 /** Why an event may not re-offer now, or null when it may. Exported for the dashboard and tests. */
 export function eventBlock(event: ReofferRow, rows: readonly ReofferRow[], catalog: readonly CatalogRow[], facts: ReofferFacts, nowMs: number): string | null {
   const kind = PROBLEM_KINDS[event.kind];
-  if (!kind || kind.service !== event.service) return 'unknown-kind';
+  if (!kind || !problemServices(event.kind).includes(event.service)) return 'unknown-kind';
   const row = catalog.find((r) => r.id === event.service);
   if (!row || !isServiceAvailable(row)) return 'unavailable';
   const at = ms(event.at);

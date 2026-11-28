@@ -16,6 +16,8 @@ import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
 import { reportVoiceUnreadable } from '../../src/core/VoiceTranscription.js';
+import { readRestoreMarker, writeRestoreMarker } from '../../src/core/restoreMarker.js';
+import { EventEmitter } from 'node:events';
 import type { InstarConfig } from '../../src/core/types.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 
@@ -29,12 +31,13 @@ const signer: MachineSigner = {
 const AUTH = 'e2e-token';
 const PIN = '123456';
 
-function boot(withLedger: boolean, extra: Record<string, unknown> = {}) {
+function boot(withLedger: boolean, extra: Record<string, unknown> = {}, prep?: (stateDir: string) => void, tunnel?: unknown) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
   for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
+  prep?.(stateDir);
   const config = {
     projectName: 'rec-e2e', projectDir: dir, stateDir, port: 0, host: '127.0.0.1', version: '0.0.0', authToken: AUTH, dashboardPin: PIN,
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
@@ -46,6 +49,7 @@ function boot(withLedger: boolean, extra: Record<string, unknown> = {}) {
   const server = new AgentServer({
     config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir),
     ...(withLedger ? { recommendedServicesLedger: makeLedger() } : {}),
+    ...(tunnel ? { tunnel } : {}),
   } as any);
   servers.push(server);
   return { server, makeLedger };
@@ -251,6 +255,28 @@ describe('recommended services: production wiring', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ service: 'bitwarden', kind: 'secret-lost', state: 'event', evidenceRef: 'boot' });
     expect(on.makeLedger().effective('bitwarden').choice).toBe('unset');
+  });
+
+  it('state-loss-risk: a restore marker on a single machine is read once at start through the real wiring and cleared', async () => {
+    let stateDir = '';
+    const on = boot(true, { monitoring: { promptGate: { ownerId: 42 } }, recommendedServices: { reoffers: { enabled: true } } }, (d) => { stateDir = d; writeRestoreMarker(d, 'snap-e2e'); });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(readRestoreMarker(stateDir)).toBeNull();
+    const rows = on.makeLedger().reofferRows('42');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ service: 'github-state-backup', kind: 'state-loss-risk', state: 'event', evidenceRef: 'restore' });
+  });
+
+  it('address-repeatedly-down: three tunnel give-ups through the real wiring record one Tailscale problem', async () => {
+    const tunnel = Object.assign(new EventEmitter(), { url: null, getExternalUrl: () => null });
+    const on = boot(true, { monitoring: { promptGate: { ownerId: 42 } }, recommendedServices: { reoffers: { enabled: true } } }, undefined, tunnel);
+    for (let i = 0; i < 3; i++) {
+      tunnel.emit('lifecycle', { from: 'self-healing', to: 'exhausted' });
+      tunnel.emit('lifecycle', { from: 'exhausted', to: 'exhausted' });
+    }
+    const rows = on.makeLedger().reofferRows('42');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ service: 'tailscale', kind: 'address-repeatedly-down', state: 'event', evidenceRef: 'tunnel' });
   });
 
   it('refuses to surface a retired offer', async () => {

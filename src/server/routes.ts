@@ -19056,6 +19056,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     existingAgentsEnabled: () => !!ctx.config.recommendedServices?.offers?.existingAgents,
     reoffersEnabled: () => !!ctx.config.recommendedServices?.reoffers?.enabled,
     unresolvedSecrets: () => findUnresolvedSecrets(ctx.config),
+    // Unknown self id counts every machine, so the answer leans to "a copy exists" and no re-offer goes out.
+    otherMachineCount: () => { const all = ctx.listPoolMachines?.() ?? []; return ctx.meshSelfId ? all.filter((m) => m.machineId !== ctx.meshSelfId).length : all.length; },
     sendOfferList: async (text, buttons) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
       if (!ctx.telegram || topicId === undefined) return null;
@@ -19226,6 +19228,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   ctx.recommendedServicesRecheck = (service) => recommendedHandle.requestRecheck(service);
   // Real-problem source `voice-unreadable` (recommended-services.md, rollout step 4): records nothing while re-offers are off.
   registerVoiceUnreadableListener((evidenceRef) => recommendedHandle.recordProblem('voice-unreadable', evidenceRef));
+  // Real-problem source `address-repeatedly-down`: each outage the tunnel's own self-heal gave up on.
+  ctx.tunnel?.on('lifecycle', (e: { from: string; to: string }) => { if (e.to === 'exhausted' && e.from !== 'exhausted') recommendedHandle.recordAddressOutage(); });
   // docs/specs/backup-email-sending.md: a one-off whose email did not go reaches the session's own topic.
   ctx.emailTopicSend = async (topicId, text) => {
     if (!ctx.telegram) throw new Error('no Telegram');

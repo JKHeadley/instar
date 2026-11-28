@@ -13,6 +13,8 @@ import express from 'express';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
+import { readRestoreMarker, writeRestoreMarker } from '../../src/core/restoreMarker.js';
+import { updateSetupState } from '../../src/recommended/setupState.js';
 import { OFFER_RESEND_AFTER_MS, registerRecommendedServiceRoutes, type RecommendedServiceRouteDeps, type RecommendedServiceRoutesHandle } from '../../src/server/recommendedServiceRoutes.js';
 
 const { privateKey } = crypto.generateKeyPairSync('ed25519');
@@ -163,6 +165,105 @@ describe('recommended services: re-offers after a real problem', () => {
       await expect(tick!()).resolves.toBeUndefined();
       expect(ledger.reofferRows()).toEqual([]);
       expect(sent).toEqual([]);
+    });
+  });
+
+  describe('state-loss-risk: a restore from a local snapshot with no copy off this machine', () => {
+    const noBackup = () => { ledger.recordNo({ service: 'github-state-backup', shutdown: 'none', reason: 'privacy', origin: 'first-offer' }); clock += 1000; };
+
+    it('after a no on GitHub backup, a restore marker re-offers it once and is cleared', async () => {
+      writeRestoreMarker(dir, 'snap-1', () => new Date(clock));
+      build({ otherMachineCount: () => 0 });
+      noBackup();
+      await tick!();
+      expect(readRestoreMarker(dir)).toBeNull();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.text).toContain('restored from a snapshot kept on this same machine');
+      expect(sent[0]!.text).toContain('/dashboard/service-yes?service=github-state-backup');
+      expect(ledger.reofferRows('42')[0]).toMatchObject({ kind: 'state-loss-risk', service: 'github-state-backup', evidenceRef: 'restore' });
+      expect(ledger.effective('github-state-backup').choice).toBe('no');
+    });
+
+    it('another machine, or a verified GitHub backup, is a copy: nothing is recorded, and the marker is still cleared', async () => {
+      writeRestoreMarker(dir, 'snap-1', () => new Date(clock));
+      build({ otherMachineCount: () => 1 });
+      noBackup();
+      await tick!();
+      expect(readRestoreMarker(dir)).toBeNull();
+      expect(ledger.reofferRows()).toEqual([]);
+      writeRestoreMarker(dir, 'snap-2', () => new Date(clock));
+      updateSetupState(dir, 'github-state-backup', { verified: { at: new Date(clock).toISOString(), result: 'pass', detail: 'ok' } });
+      build({ otherMachineCount: () => 0 });
+      await tick!();
+      expect(ledger.reofferRows()).toEqual([]);
+    });
+
+    it('with the switch off the marker is cleared and nothing recorded, so turning it on later digs up nothing', async () => {
+      enabled = false;
+      writeRestoreMarker(dir, 'snap-1', () => new Date(clock));
+      build({ otherMachineCount: () => 0 });
+      noBackup();
+      await tick!();
+      expect(readRestoreMarker(dir)).toBeNull();
+      enabled = true;
+      build({ otherMachineCount: () => 0 });
+      await tick!();
+      expect(ledger.reofferRows()).toEqual([]);
+    });
+
+    it('a marker older than 30 days, or none at all, records nothing', async () => {
+      writeRestoreMarker(dir, 'snap-1', () => new Date(clock - 31 * 24 * 60 * 60_000));
+      build({ otherMachineCount: () => 0 });
+      noBackup();
+      await tick!();
+      expect(ledger.reofferRows()).toEqual([]);
+      build({ otherMachineCount: () => 0 });
+      await tick!();
+      expect(ledger.reofferRows()).toEqual([]);
+    });
+  });
+
+  describe('address-repeatedly-down: outages the tunnel gave up on', () => {
+    const no = (service: string) => { ledger.recordNo({ service, shutdown: 'none', reason: 'not-needed', origin: 'first-offer' }); clock += 1000; };
+
+    it('three in a day re-offer Tailscale once; two do not; the count survives a restart', async () => {
+      build();
+      no('tailscale');
+      handle.recordAddressOutage();
+      clock += 60_000;
+      handle.recordAddressOutage();
+      expect(ledger.reofferRows()).toEqual([]);
+      build(); // a restart: the count is on disk
+      clock += 60_000;
+      handle.recordAddressOutage();
+      await tick!();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.text).toContain('web address went down three times');
+      expect(sent[0]!.text).toContain('service=tailscale');
+      expect(ledger.effective('tailscale').choice).toBe('no');
+    });
+
+    it('outages spread over more than a day are not a problem', () => {
+      build();
+      no('tailscale');
+      for (let i = 0; i < 3; i++) { handle.recordAddressOutage(); clock += 13 * 60 * 60_000; }
+      expect(ledger.reofferRows()).toEqual([]);
+    });
+
+    it('with Tailscale already a yes, the problem re-offers Cloudflare instead', async () => {
+      build();
+      ledger.recordYes({ service: 'tailscale', origin: 'person-asked', offerTextHash: 'h', grantMachine: 'm_a', principal: '42' });
+      no('cloudflare-domain');
+      for (let i = 0; i < 3; i++) handle.recordAddressOutage();
+      expect(ledger.reofferRows('42')[0]).toMatchObject({ kind: 'address-repeatedly-down', service: 'cloudflare-domain' });
+    });
+
+    it('switched off, outages are not even counted', () => {
+      enabled = false;
+      build();
+      no('tailscale');
+      for (let i = 0; i < 5; i++) handle.recordAddressOutage();
+      expect(fs.existsSync(path.join(dir, 'state', 'recommended-service-setup', 'address-outages.json'))).toBe(false);
     });
   });
 });

@@ -7,11 +7,13 @@
  * answers 503.
  */
 import { storageErrorResponse } from '../core/storageMachineName.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Request, Response, Router } from 'express';
 import { parseCloudflareSecret } from '../recommended/cloudflareDomain.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger, type ReofferRow } from '../recommended/RecommendedServicesLedger.js';
-import { PROBLEM_KINDS, isDuplicateEvent, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
+import { EVENT_FRESH_MS, isDuplicateEvent, noteOutage, serviceForProblem, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
 import { newListId, offerCandidates, renderOfferList } from '../recommended/offerList.js';
 import { OfferTapStore } from '../recommended/offerTaps.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
@@ -25,6 +27,7 @@ import { EMAIL_RECIPIENT_SECRET, normalizeRecipient, readEmailCredential, EMAIL_
 import type { BitwardenSurface } from '../recommended/bitwardenVault.js';
 import type { GitHubBackupSurface } from '../recommended/githubBackup.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
+import { clearRestoreMarker, readRestoreMarker } from '../core/restoreMarker.js';
 import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, markMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { RECOMMENDED_SERVICE_IDS } from '../recommended/serviceIds.js';
@@ -123,6 +126,11 @@ export interface RecommendedServiceRouteDeps {
    * encrypted store was merged (a secret the config refers to is missing). Read once per server start.
    */
   unresolvedSecrets?: () => readonly string[];
+  /**
+   * The `state-loss-risk` source: how many other machines this agent runs on (each holds a copy of its state).
+   * With none, and no verified GitHub backup, a restore from a local snapshot means nothing exists off this machine.
+   */
+  otherMachineCount?: () => number;
   /** Rollout step 5: when true, an existing agent's owner is admitted to the first list (migration marked complete at the offer tick). */
   existingAgentsEnabled?: () => boolean;
   /** Sends one list with its buttons to the owner's conversation and returns the platform's message id, or null when it did not go. */
@@ -159,10 +167,12 @@ export interface RecommendedServiceRoutesHandle {
    * Signal only: never throws, never blocks the caller, and records nothing while re-offers are off.
    */
   recordProblem: (kind: string, evidenceRef: string) => void;
+  /** The tunnel's self-heal gave up on an outage (`exhausted`). Three in a day is the `address-repeatedly-down` problem. */
+  recordAddressOutage: () => void;
 }
 
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): RecommendedServiceRoutesHandle {
-  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {}, recordProblem: () => {} };
+  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {}, recordProblem: () => {}, recordAddressOutage: () => {} };
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
   // SEC-135 Observability: per-machine confirm counters, flushed at most once a minute.
@@ -699,8 +709,11 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       const owner = deps.owner();
       if (!ledger || owner === null) return;
       const nowMs = deps.now?.() ?? Date.now();
-      if (isDuplicateEvent(ledger.reofferRows(owner), kind, nowMs)) return;
-      ledger.recordReofferEvent({ service: PROBLEM_KINDS[kind]!.service, owner, kind, evidenceRef });
+      const rows = ledger.reofferRows(owner);
+      if (isDuplicateEvent(rows, kind, nowMs)) return;
+      const service = serviceForProblem(kind, rows, (id) => ledger.effective(id));
+      if (service === null) return;
+      ledger.recordReofferEvent({ service, owner, kind, evidenceRef });
     } catch (err) { // @silent-fallback-ok — reported through report(); a problem signal never breaks its source
       report(`Record the ${kind} problem`, err, 'This sighting is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
     }
@@ -720,6 +733,52 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return;
     }
     if (missing.length) handle.recordProblem('secret-lost', 'boot');
+  };
+  // `state-loss-risk` (Real-problem events): once per server start, as soon as there is a ledger and an owner. This
+  // start follows a restore from a local snapshot and no copy exists off this machine. The floor then requires a no
+  // (or an unanswered offer). Its own flag, so the secret check above keeps its own timing.
+  let restoreCheckDone = false;
+  const checkRestoreOnce = (): void => {
+    if (restoreCheckDone || !deps.ledger() || deps.owner() === null) return;
+    restoreCheckDone = true;
+    const on = !!deps.reoffersEnabled?.();
+    const fail = (what: string, err: unknown): void => report(what, err, 'This start is not checked; the next start is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+    // The marker is read and cleared even with the switch off, so turning it on later never digs up an old restore.
+    const marker = readRestoreMarker(deps.stateDir);
+    if (!marker) return;
+    try {
+      clearRestoreMarker(deps.stateDir);
+    } catch (err) { // @silent-fallback-ok — reported; a marker left behind is read again at most once per start, and the daily dedupe holds
+      fail('Clear the restore marker', err);
+    }
+    const nowMs = deps.now?.() ?? Date.now();
+    if (!on || nowMs - Date.parse(marker.at) >= EVENT_FRESH_MS) return;
+    try {
+      const backedUp = readSetupStates(deps.stateDir)['github-state-backup']?.verified?.result === 'pass';
+      const otherMachines = deps.otherMachineCount?.() ?? 0;
+      if (!backedUp && otherMachines === 0) handle.recordProblem('state-loss-risk', 'restore');
+    } catch (err) { // @silent-fallback-ok — reported through fail()
+      fail('Check for an off-machine copy after a restore', err);
+    }
+  };
+  // `address-repeatedly-down`: the tunnel reports each outage its own self-heal gave up on. The times are kept per
+  // machine (an address belongs to one machine), so a restart doesn't forget the day's count.
+  handle.recordAddressOutage = (): void => {
+    try {
+      if (!deps.reoffersEnabled?.()) return;
+      const file = path.join(deps.stateDir, 'state', 'recommended-service-setup', 'address-outages.json');
+      let times: number[] = [];
+      try {
+        const raw: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (Array.isArray(raw)) times = raw.filter((t): t is number => typeof t === 'number');
+      } catch { /* @silent-fallback-ok — no file yet means no outages counted yet */ }
+      const next = noteOutage(times, deps.now?.() ?? Date.now());
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(next.times));
+      if (next.problem) handle.recordProblem('address-repeatedly-down', 'tunnel');
+    } catch (err) { // @silent-fallback-ok — reported; a problem signal never breaks its source
+      report('Count an address outage', err, 'This outage is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+    }
   };
   let lastReofferAttemptAt = 0;
   let reoffering = false;
@@ -778,6 +837,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     await reconcile();
     admitExistingOwner();
     checkSecretsOnce();
+    checkRestoreOnce();
     const ledger = deps.ledger();
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
     if (ledger) await maybeReoffer(ledger, deps.now?.() ?? Date.now());
