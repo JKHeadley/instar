@@ -11,3 +11,5 @@ On the first load, the tree waits for the placement response so a pinned project
 The new view takes over when the server confirms that placement is complete and supplies all three sections.
 
 A signed disposable server supplied the project, nested group, and ungrouped chat used in the phone and desktop browser checks. The checks verify that the generated conversation stays inside its project, the hidden chat stays out of the list, and Grouped and Flat can be switched. The linked-card fixture also confirms that a work card’s conversation appears in its project and offers a link back to the exact card in the Work Board. Production owner pairing still needs its own check.
+
+After review on 28 November, three things changed. A conversation that belongs to a project whose heading has not arrived yet now stays on the page under "Not in a group yet" instead of disappearing. A group that holds only one conversation shows as one row with the group's own name, the same way a one-conversation project already did. And if the grouped view cannot be loaded for any reason, the page shows the older list of conversations instead of an error.

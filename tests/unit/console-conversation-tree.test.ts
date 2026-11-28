@@ -56,7 +56,8 @@ describe('shared Conversations tree', () => {
     expect([...host.querySelectorAll(':scope > details > summary')].map(node => node.textContent)).toEqual(['Projects', 'Groups', 'Not in a group yet']);
     expect([...host.querySelectorAll('details')].every(section => section.open)).toBe(true);
     expect([...host.querySelectorAll('a')].map(node => node.textContent)).toEqual([
-      'Chief of Staff', 'Newer worker', 'Project conversation', 'Group chat', 'See more in this group', 'Ordinary conversation',
+      'Chief of Staff', 'Newer worker', 'Project conversation', 'Group chat', 'See more in this group', 'Pending project header',
+      'Ordinary conversation',
     ]);
   });
 
@@ -113,7 +114,7 @@ describe('shared Conversations tree', () => {
     expect(projects.querySelector('.chat-project-status')?.textContent).toBe('Moving');
     expect(groups.querySelectorAll('details')).toHaveLength(1);
     expect(groups.querySelector(':scope > details > summary')?.textContent).toBe('Incomplete group · 1 conversation');
-    expect(groups.querySelector(':scope > a .chat-row-title')?.textContent).toBe('Only chat');
+    expect(groups.querySelector(':scope > a .chat-row-title')?.textContent).toBe('Saved group');
     expect(groups.querySelector(':scope > a .chat-group-icon svg')).toBeTruthy();
   });
 

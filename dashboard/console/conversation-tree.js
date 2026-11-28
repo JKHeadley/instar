@@ -153,7 +153,8 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
     const project = n.project && { project: true, title: n.project.title, status: projectStatus?.(n.projectKey) };
     const single = isSingleConversation(n);
     if (n.kind === 'effort' && single) {
-      return branch(n.children[0], project || affiliation || { project: false });
+      // A one-chat group keeps its own name on the row, as a one-chat project does.
+      return branch(n.children[0], project || affiliation || { project: false, title: n.title });
     }
     const children = sorted(n.children).map(child => branch(child)).filter(Boolean);
     // Proposed card placement is rendered only inside the server-chosen branch.
@@ -185,7 +186,9 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
   const sectionItems = (name) => pages.flatMap(page => page.sections?.[name] || []);
   const projectRoots = hasSections ? sectionItems('projects') : roots.filter(n => n.kind === 'effort' && n.project);
   const groupRoots = hasSections ? sectionItems('groups') : roots.filter(n => n.kind === 'effort' && !n.project);
-  const ungrouped = hasSections ? sectionItems('ungrouped').filter(node => !node.projectKey) : [];
+  // A project chat already drawn under Projects is skipped by `seen`; one whose project header is
+  // missing stays visible here instead of vanishing from grouped view.
+  const ungrouped = hasSections ? sectionItems('ungrouped') : [];
   for (const [name, rows] of [['Projects', projectRoots], ['Groups', groupRoots], ['Not in a group yet', ungrouped]]) {
     const children = sorted(rows).map(child => branch(child)).filter(Boolean);
     if (children.length) output.push(disclosure(`section:${name === 'Not in a group yet' ? 'Ungrouped' : name}`, name, children, 'conversation-tree-section'));

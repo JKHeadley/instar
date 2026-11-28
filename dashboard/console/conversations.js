@@ -426,7 +426,7 @@ export async function renderConversations(main, ctx) {
       if (current()) restoreScroll(key);
       return;
     }
-    if (treeResult.status !== 404 && treeResult.status !== 503 && !treeResult.ok) { failure(main, treeResult, retry); return; }
+    // Any tree failure falls back to the older roots view below (a sign-in refusal was already sent to unlock above).
   }
   const result = await read(`${ROOTS}?${pageQuery(state.view, state.q)}`, controller.signal);
   if (!current()) return;

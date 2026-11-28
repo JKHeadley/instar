@@ -495,9 +495,18 @@ describe('native console Conversations', () => {
     });
     expect(main.querySelector('.conversation-tree-chief')?.textContent).toContain('Chief of Staff');
     expect(main.querySelector('details details')).toBeNull();
-    expect(main.querySelector('details > a')?.textContent).toBe('Project conversation');
+    // A one-chat group shows as one row carrying the group's own name.
+    expect(main.querySelector('details > a')?.textContent).toBe('Project one');
     expect(main.querySelector('a[href$="view=flat"]')?.textContent).toBe('Flat');
     expect(requests.some(r => r.url.startsWith('/conversation-graph/roots'))).toBe(false);
+  });
+
+  it('falls back to the older roots view when the shared tree fails with a server error', async () => {
+    const { main, requests } = await boot('#/work/conversations', (url) => url === '/conversation-graph/tree'
+      ? { status: 500, body: { error: 'boom' } } : { body: page([row(0), row(1)]) });
+    expect(requests.some(r => r.url === '/conversation-graph/tree')).toBe(true);
+    expect(requests.some(r => r.url.startsWith('/conversation-graph/roots'))).toBe(true);
+    expect(main.querySelectorAll('.conversation-row')).toHaveLength(2);
   });
 
   it('requires human unlock and shows five safe text rows with All and search reachable', async () => {
