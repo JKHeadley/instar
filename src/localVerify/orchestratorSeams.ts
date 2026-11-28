@@ -340,7 +340,7 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
     foreignSuiteHolders: (ours) => {
       try {
-        return getHostTestRunnerSemaphore().status().liveHolders
+        return getHostTestRunnerSemaphore().status({ includeRecentEvents: false }).liveHolders
           .filter((h) => !ours.has(h.pid) && h.pid !== process.pid)
           .map((h) => ({ pid: h.pid }));
       } catch {

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "verify-semaphore-capacity-read",
+  "sessionId": "a4c875e9-a7d4-4699-b764-d80aa9165b4a",
+  "timestamp": "2026-11-27T23:51:06.277Z",
+  "artifactPath": "upgrades/side-effects/verify-semaphore-capacity-read.md",
+  "artifactSha256": "7bae892a077fbf6e76036aef34145a9bea1380e78c8d0c5953e17e3b25f2f51b",
+  "coveredFiles": [
+    "docs/specs/verify-semaphore-capacity-read.eli16.md",
+    "upgrades/next/verify-semaphore-capacity-read.md",
+    "upgrades/side-effects/verify-semaphore-capacity-read.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation for the already reviewed capacity-only read. No new authority or state change.",
+  "eli16Path": "docs/specs/verify-semaphore-capacity-read.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/verify-semaphore-capacity-read.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

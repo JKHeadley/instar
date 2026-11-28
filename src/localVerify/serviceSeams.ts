@@ -151,7 +151,7 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
     },
     foreignSuiteHolders(): Array<{ pid: number }> {
       try {
-        return getHostTestRunnerSemaphore().status().liveHolders.map((h) => ({ pid: h.pid }));
+        return getHostTestRunnerSemaphore().status({ includeRecentEvents: false }).liveHolders.map((h) => ({ pid: h.pid }));
       } catch {
         return []; // @silent-fallback-ok: the bound is watch-only; an unreadable holders file is no observation
       }
@@ -162,7 +162,7 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
         // The verifier child receives scrubbedEnv(), which drops the server's
         // per-process cap override. Its cap is the shared tuning-file value.
         // Reserve the next slot whenever either side sees a cap of one.
-        const serverCap = semaphore.status().cap;
+        const serverCap = semaphore.resolveContext().suiteCap.cap;
         const childCap = resolveCap('suite', scrubbedEnv(), semaphore.resolveContext().tuning.file).cap;
         return Math.min(serverCap, childCap);
       } catch { return 1; } // @silent-fallback-ok: unknown capacity keeps a runnable verifier's next-slot claim

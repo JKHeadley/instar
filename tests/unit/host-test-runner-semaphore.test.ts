@@ -2273,7 +2273,14 @@ describe('§2.4 witness liveness-gated sweep', () => {
       ),
     );
     const inoBefore = fs.statSync(paths.holders).ino;
+    fs.writeFileSync(paths.ledger, JSON.stringify({ kind: 'skip', reason: 'test' }) + '\n');
     const status = sem.status();
+    const capacityOnly = sem.status({ includeRecentEvents: false });
+    expect(status.skipHistogram).toEqual({ test: 1 });
+    expect(capacityOnly.suite).toEqual(status.suite);
+    expect(capacityOnly.targeted).toEqual(status.targeted);
+    expect(capacityOnly.recentEvents).toEqual([]);
+    expect(capacityOnly.skipHistogram).toEqual({});
     expect(status.targeted.saturated).toBe(true);
     expect(status.suite.saturated).toBe(false);
     expect(status.suite.available).toBe(1);
