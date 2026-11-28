@@ -26,6 +26,8 @@ import {
   parseConformanceResponse,
   parseFitResponse,
   CONFORMANCE_REVIEW_TIMEOUT_MS,
+  buildFitPrompt,
+  classifyProviderFailure,
 } from '../../src/core/reviewers/standards-conformance.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 
@@ -276,25 +278,25 @@ describe('Constitutional Traceability — judgeFit + parseFitResponse', () => {
     expect(r.verdict).toBe('fit');
   });
 
-  it('FAILS OPEN to "fit" when no provider — never block work by being down', async () => {
+  it('reports "not-checked" (never "fit") when no provider — never a block, never a pass', async () => {
     const r = await new StandardsConformanceReviewer(null).judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
-    expect(r.verdict).toBe('fit');
+    expect(r.verdict).toBe('not-checked');
     expect(r.degraded).toBe(true);
     expect(r.degradeReason).toBe('no-intelligence');
   });
 
-  it('FAILS OPEN to "fit" when the provider throws', async () => {
+  it('reports "not-checked" when the provider throws', async () => {
     const provider: IntelligenceProvider = { async evaluate() { throw new Error('down'); } };
     const r = await new StandardsConformanceReviewer(provider).judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
-    expect(r.verdict).toBe('fit');
+    expect(r.verdict).toBe('not-checked');
     expect(r.degraded).toBe(true);
     expect(r.degradeReason).toBe('error');
   });
 
-  it('FAILS OPEN to "fit" when the verdict is unparseable', async () => {
+  it('reports "not-checked" when the verdict is unparseable', async () => {
     const r = await new StandardsConformanceReviewer(fitProvider('no json here'))
       .judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
-    expect(r.verdict).toBe('fit');
+    expect(r.verdict).toBe('not-checked');
     expect(r.degraded).toBe(true);
     expect(r.degradeReason).toBe('unparseable');
   });
@@ -305,5 +307,76 @@ describe('Constitutional Traceability — judgeFit + parseFitResponse', () => {
     expect(parseFitResponse('prefix {"verdict":"none","reason":"c"} suffix')!.verdict).toBe('none');
     expect(parseFitResponse('not json at all')).toBeNull();
     expect(parseFitResponse('{"verdict":"maybe","reason":"x"}')).toBeNull();
+  });
+});
+
+describe('A spec is judged whole, never cut; a spec the model cannot take is "not checked"', () => {
+  it('labels too-long from the provider error with the prompt removed, never from the spec text it echoes', () => {
+    const prompt = 'SPEC: the model context window is the only limit';
+    // execFile-style timeout message that embeds the whole command line, prompt included.
+    expect(classifyProviderFailure(new Error(`Command failed: claude -p ${prompt}\nkilled after 150000ms`), prompt)).toBe('error');
+    expect(classifyProviderFailure(new Error(`Command failed: claude -p ${prompt}\nPrompt is too long`), prompt)).toBe('too-long');
+    expect(classifyProviderFailure(Object.assign(new Error('spawn E2BIG'), { code: 'E2BIG' }), prompt)).toBe('too-long');
+    expect(classifyProviderFailure(Object.assign(new Error(`Command failed ${prompt}`), { stderr: 'rate limited' }), prompt)).toBe('error');
+  });
+
+  it('judgeFit: not started without enough time left in the route budget', async () => {
+    let calls = 0;
+    const p: IntelligenceProvider = { async evaluate() { calls++; return '{"verdict":"fit","reason":"x"}'; } };
+    const r = new StandardsConformanceReviewer(p);
+    const articles = parseStandardsRegistry(fs.readFileSync(path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md'), 'utf-8'));
+    const b = await r.judgeFit('# s', 'No Manual Work', articles, { timeoutMs: 5_000 });
+    expect(b.verdict).toBe('not-checked'); expect(b.reason).toMatch(/none was left/);
+    expect(calls).toBe(0);
+  });
+
+  const bigSpec = 'BEGIN ' + 'x'.repeat(200_000) + ' END-OF-SPEC';
+
+  it('review(): a 200,000-character spec reaches the model whole, with no truncation marker', async () => {
+    let prompt = '';
+    const provider: IntelligenceProvider = { async evaluate(p: string) { prompt = p; return '[]'; } };
+    const r = await new StandardsConformanceReviewer(provider).review(bigSpec, FIXTURE_ARTICLES);
+    expect(r.degraded).toBe(false);
+    expect(prompt).toContain(bigSpec);
+    expect(prompt).toContain('END-OF-SPEC');
+    expect(prompt).not.toContain('[truncated]');
+    expect(r.charsJudged).toBe(bigSpec.length);
+    expect(r.charsTotal).toBe(bigSpec.length);
+  });
+
+  it('review(): a provider "prompt is too long" error → degraded too-long, 0 characters judged, plain reason', async () => {
+    const provider: IntelligenceProvider = { async evaluate() { throw new Error('Prompt is too long: 250000 tokens > 200000 maximum'); } };
+    const r = await new StandardsConformanceReviewer(provider).review(bigSpec, FIXTURE_ARTICLES);
+    expect(r.degraded).toBe(true);
+    expect(r.degradeReason).toBe('too-long');
+    expect(r.charsJudged).toBe(0);
+    expect(r.notCheckedReason).toMatch(/too long for the model to judge whole/);
+    expect(r.findings).toEqual([]);
+  });
+
+  it('judgeFit(): a provider too-long error → "not-checked" too-long, never "fit"', async () => {
+    const provider: IntelligenceProvider = { async evaluate() { throw new Error('maximum context length exceeded'); } };
+    const r = await new StandardsConformanceReviewer(provider).judgeFit(bigSpec, 'Signal vs. Authority', FIXTURE_ARTICLES);
+    expect(r.verdict).toBe('not-checked');
+    expect(r.degradeReason).toBe('too-long');
+  });
+
+  it('the prompt builders carry the whole spec', () => {
+    expect(buildConformancePrompt(bigSpec, FIXTURE_ARTICLES)).toContain(bigSpec);
+    expect(buildFitPrompt(bigSpec, FIXTURE_ARTICLES[1])).toContain(bigSpec);
+  });
+
+  it('every degraded review carries a plain not-checked reason and judged 0 characters', async () => {
+    const thrower: IntelligenceProvider = { async evaluate() { throw new Error('down'); } };
+    const garbage: IntelligenceProvider = { async evaluate() { return 'no json'; } };
+    for (const r of [
+      await new StandardsConformanceReviewer(null).review('spec', FIXTURE_ARTICLES),
+      await new StandardsConformanceReviewer(thrower).review('spec', FIXTURE_ARTICLES),
+      await new StandardsConformanceReviewer(garbage).review('spec', FIXTURE_ARTICLES),
+    ]) {
+      expect(r.degraded).toBe(true);
+      expect(r.notCheckedReason).toMatch(/^not checked: /);
+      expect(r.charsJudged).toBe(0);
+    }
   });
 });

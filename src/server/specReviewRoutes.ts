@@ -11,6 +11,7 @@
  */
 
 import { Router } from 'express';
+import { FULL_BODY_LIMIT_BYTES } from './bodyBudget.js';
 import type { Request, Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,6 +27,20 @@ import { recordSpecConstitutionCheck, readSpecConstitutionChecks } from '../core
  * (scope-accretion R32): frontmatter `slug:` when present, else the specPath
  * basename minus `.md`. Empty when neither resolves (nothing recorded).
  */
+/**
+ * The route's outer request budget (middleware SPEC_REVIEW_TIMEOUT_MS; a test pins the
+ * two equal). Kept as a local constant so this module does not import the middleware.
+ */
+export const CONFORMANCE_ROUTE_BUDGET_MS = 180_000;
+
+/** Time kept back from the route budget for recording and replying after the fit call. */
+export const REPLY_MARGIN_MS = 10_000;
+
+/** What the fit call may use: the route budget left since the request arrived, less the reply margin. */
+export function fitTimeLeft(startedAt: number, now: number): number {
+  return CONFORMANCE_ROUTE_BUDGET_MS - (now - startedAt) - REPLY_MARGIN_MS;
+}
+
 export function conformanceSlugFor(markdown: string, specPath?: string): string {
   const fm = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (fm) {
@@ -119,6 +134,8 @@ export function createSpecReviewRoutes(deps: {
   }
 
   router.post('/spec/conformance-check', async (req: Request, res: Response) => {
+    // The budget clock starts when the request arrives, as the middleware's does.
+    const startedAt = Date.now();
     let markdown: string | undefined;
     if (typeof req.body?.markdown === 'string' && req.body.markdown.trim()) {
       markdown = req.body.markdown;
@@ -126,6 +143,15 @@ export function createSpecReviewRoutes(deps: {
       const p = resolveSpecPath(req.body.specPath);
       if (!p) return res.status(400).json({ error: 'specPath escapes specsDir' });
       if (!fs.existsSync(p)) return res.status(404).json({ error: 'spec not found' });
+      // A spec file is held to the same ceiling as an inline spec (the general JSON parser's
+      // FULL_BODY_LIMIT_BYTES), so the route never builds a prompt from an unbounded read.
+      // Refused plainly, never cut: nothing is judged from part of the file.
+      try {
+        const size = fs.statSync(p).size;
+        if (size > FULL_BODY_LIMIT_BYTES) {
+          return res.status(413).json({ error: `spec too large to judge: ${size} bytes, over ${FULL_BODY_LIMIT_BYTES}`, checked: false, notChecked: `not checked: the spec file (${size} bytes) is over the ${FULL_BODY_LIMIT_BYTES}-byte input ceiling; nothing was read or judged` });
+        }
+      } catch (err) { return res.status(500).json({ error: `read failed: ${(err as Error).message}` }); }
       try { markdown = fs.readFileSync(p, 'utf-8'); }
       catch (err) { return res.status(500).json({ error: `read failed: ${(err as Error).message}` }); }
     } else {
@@ -164,18 +190,25 @@ export function createSpecReviewRoutes(deps: {
     // the one that catches a truncated constitution — silently does not happen.
     const canary = runRegistryCanary(articles, detailed.diagnostics);
 
-    const report = await reviewer.review(markdown, articles);
+    // The review also stays inside what is left of the budget (setup time counts).
+    const report = await reviewer.review(markdown, articles, { timeoutMs: fitTimeLeft(startedAt, Date.now()) });
 
     // Constitutional Traceability (Part C): attach the fit verdict for the spec's
     // named parent constitutional standard. parentPrinciple comes from the request
     // body or the spec's frontmatter; when present, judgeFit returns fit/weak/none
-    // (and fails open to 'fit' when the reviewer is degraded). Absent → no fit field
+    // (and 'not-checked' when the reviewer is degraded: never a pass, never a block). Absent → no fit field
     // (the caller — e.g. the pre-commit gate — treats a missing parent as block).
     const parentPrinciple = (typeof req.body?.parentPrinciple === 'string' && req.body.parentPrinciple.trim())
       ? req.body.parentPrinciple.trim()
       : extractParentPrinciple(markdown);
     if (parentPrinciple) {
-      report.fit = await reviewer.judgeFit(markdown, parentPrinciple, articles);
+      // The review and the fit judgment share the route's request budget: the fit call
+      // gets only what is left (less a reply margin), so a slow whole-spec review ends
+      // as a stated 'not checked' fit, never a 408 that hides both results.
+      const left = fitTimeLeft(startedAt, Date.now());
+      // Made even after a too-long review: the fit prompt carries the spec with one
+      // standard, not the whole constitution, so it can fit where the review did not.
+      report.fit = await reviewer.judgeFit(markdown, parentPrinciple, articles, { timeoutMs: left });
     }
 
     // Record metrics (best-effort).
@@ -194,9 +227,12 @@ export function createSpecReviewRoutes(deps: {
     // keyed by spec slug — a forged convergence report without a real ceremony
     // run has no server record, and the report arm of corroboration can never
     // clear on it. Best-effort: a miss only DELAYS clearing (keep-working).
+    // Only a run that actually CHECKED the spec counts: a degraded run (too long,
+    // no provider, error, unreadable reply) judged nothing, so it is not evidence
+    // that the ceremony checked this spec.
     try {
       const slug = conformanceSlugFor(markdown, typeof req.body?.specPath === 'string' ? req.body.specPath : undefined);
-      if (slug) recordConformanceInvocationAt(deps.stateDir, slug);
+      if (slug && !report.degraded) recordConformanceInvocationAt(deps.stateDir, slug);
     } catch { /* @silent-fallback-ok — ceremony-record persistence is corroboration
                  evidence only; a miss fails toward keep-working (R21/R22) */ }
 
@@ -212,7 +248,16 @@ export function createSpecReviewRoutes(deps: {
       });
     } catch { /* @silent-fallback-ok — record is evidence only; a miss fails toward re-running the check */ }
 
-    res.json({ report, registryCanary: canary });
+    // A degraded report is NOT a result. Say so at the top level too, so a caller
+    // that only looks at findings cannot read an unchecked spec as a clean one.
+    res.json({
+      report,
+      registryCanary: canary,
+      checked: !report.degraded,
+      ...(report.degraded ? { notChecked: report.notCheckedReason ?? `not checked: ${report.degradeReason ?? 'unknown'}` } : {}),
+      // The fit judgment is a second model call and can fail on its own.
+      ...(report.fit ? { fitChecked: !report.fit.degraded } : {}),
+    });
   });
 
   // This machine's recorded constitution checks (B24 proxied-on-read source). Local only:
@@ -238,10 +283,11 @@ export async function runConformanceCheck(
   const articles = parseStandardsRegistry(registryMarkdown);
   const canary = runRegistryCanary(articles);
   const reviewer = new StandardsConformanceReviewer(intelligence, { model });
+  const startedAt = Date.now();
   const report = await reviewer.review(markdown, articles);
   const parentPrinciple = extractParentPrinciple(markdown);
   if (parentPrinciple) {
-    report.fit = await reviewer.judgeFit(markdown, parentPrinciple, articles);
+    report.fit = await reviewer.judgeFit(markdown, parentPrinciple, articles, { timeoutMs: fitTimeLeft(startedAt, Date.now()) });
   }
   return { report, registryCanary: canary };
 }
