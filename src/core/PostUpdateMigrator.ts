@@ -2244,7 +2244,7 @@ When a session is genuinely stuck at the context wall ("Context limit reached ·
  * inserts AND as the in-place replacement for the stale pre-flip paragraph
  * ("The attention queue spawns ONE Telegram forum topic per item…").
  */
-const SINGLE_ATTENTION_TOPIC_LEAD = `Attention items route into the single durable "🔔 Attention" hub topic by default (single-alerts-topic routing, 2026-07-09): EVERY priority — HIGH/URGENT included — lands as one message THERE, and alerts never spawn their own Telegram topic. The legacy per-item mode is opt-in via \`messaging[].config.attentionRouting = { "mode": "per-item" }\`; in THAT mode a per-source circuit breaker sits at the topic-creation chokepoint (\`TelegramAdapter.createAttentionItem\`): if a single attention \`sourceContext\` exceeds its topic budget within a rolling window, further NON-critical items from that source are COALESCED into ONE running "notices coalesced" topic and recorded in \`state/attention-suppressed.jsonl\` — never a wall of new topics. No item is ever dropped in either mode; every item is still in the attention store.`;
+const SINGLE_ATTENTION_TOPIC_LEAD = `Attention items route into the single durable "🔔 Attention" hub topic by default (single-alerts-topic routing, 2026-07-09): EVERY priority — HIGH/URGENT included — lands as one message THERE, and alerts never spawn their own Telegram topic. The legacy per-item mode is deprecated (a rollback lever for old installs only, never for new work) and stops working on 2027-03-01; while an install still uses it, a per-source circuit breaker sits at the topic-creation chokepoint (\`TelegramAdapter.createAttentionItem\`): if a single attention \`sourceContext\` exceeds its topic budget within a rolling window, further NON-critical items from that source are COALESCED into ONE running "notices coalesced" topic and recorded in \`state/attention-suppressed.jsonl\` — never a wall of new topics. No item is ever dropped in either mode; every item is still in the attention store.`;
 
 export interface MigrationResult {
   /** What was upgraded */
@@ -14662,6 +14662,17 @@ ${SINGLE_ATTENTION_TOPIC_LEAD}
       result.upgraded.push('CLAUDE.md: updated Topic-Flood Guard section for single-alerts-topic default');
     } else {
       result.skipped.push('CLAUDE.md: Topic-Flood Guard section already on single-alerts-topic wording');
+    }
+
+    // Per-item attention routing retirement (STD-SUBCOUNTDOWN-per-item-routing-retirement,
+    // 2026-11-28): the lead paragraph above used to tell agents how to switch the legacy per-item
+    // mode on. Rewrite that one clause in place so an existing agent is never told how to choose a
+    // mode that is deprecated and removed on 2027-03-01. Idempotent: keyed on the old clause.
+    const perItemOptInClause = 'The legacy per-item mode is opt-in via `messaging[].config.attentionRouting = { "mode": "per-item" }`; in THAT mode';
+    if (content.includes(perItemOptInClause)) {
+      content = content.replace(perItemOptInClause, 'The legacy per-item mode is deprecated (a rollback lever for old installs only, never for new work) and stops working on 2027-03-01; while an install still uses it,');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: per-item attention routing marked deprecated with its removal date');
     }
 
     // Bounded Notification Surface (2026-06-05, flood #3) — extends the

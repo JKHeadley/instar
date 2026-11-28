@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "per-item-routing-retirement",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-28T16:48:00.402Z",
+  "artifactPath": "upgrades/side-effects/per-item-routing-retirement.md",
+  "artifactSha256": "efbe0d02d3ac7533d10ca4d79f54b5a1777d1b7469b98aacc04c1209f2f610df",
+  "coveredFiles": [
+    "docs/specs/per-item-routing-retirement.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/awareness/per-item-attention-routing-retired.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/attentionRoutingMode.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-topicFloodGuard.test.ts",
+    "tests/unit/per-item-routing-retirement.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/next/per-item-routing-retirement.md",
+    "upgrades/side-effects/per-item-routing-retirement.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dated deprecation of a legacy Telegram attention routing mode with a startup warning, a source ratchet and agent instruction text; no authority change.",
+  "eli16Path": "docs/specs/per-item-routing-retirement.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/per-item-routing-retirement.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

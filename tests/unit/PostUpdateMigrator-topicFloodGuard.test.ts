@@ -109,4 +109,22 @@ describe('PostUpdateMigrator — Topic-Flood Guard CLAUDE.md section', () => {
     expect(after2).toBe(content);
     expect(result2.upgraded.some((u) => u.includes('single-alerts-topic'))).toBe(false);
   });
+
+  it('rewrites the old per-item opt-in clause in place, once (per-item routing retirement)', () => {
+    const clause = 'The legacy per-item mode is opt-in via `messaging[].config.attentionRouting = { "mode": "per-item" }`; in THAT mode';
+    const section = [
+      '# CLAUDE.md', '', '## Topic-Flood Guard (attention queue circuit breaker)', '',
+      `Attention items route into the single durable "🔔 Attention" hub topic by default. ${clause} a per-source circuit breaker sits at the topic-creation chokepoint. See \`state/attention-suppressed.jsonl\`.`,
+      '',
+    ].join('\n');
+    fs.writeFileSync(claudeMdPath, section);
+    const result = runClaudeMdMigration(newMigrator());
+    const after1 = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after1).not.toContain(clause);
+    expect(after1).toContain('stops working on 2027-03-01; while an install still uses it, a per-source circuit breaker');
+    expect(result.upgraded.some((u) => u.includes('per-item attention routing'))).toBe(true);
+    const result2 = runClaudeMdMigration(newMigrator());
+    expect(fs.readFileSync(claudeMdPath, 'utf-8')).toBe(after1);
+    expect(result2.upgraded.some((u) => u.includes('per-item attention routing'))).toBe(false);
+  });
 });

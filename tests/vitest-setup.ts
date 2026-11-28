@@ -7,6 +7,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { setOriginStageDeadlineProcessDefaults, setOriginStoreRequestTimeoutProcessDefault } from '../src/messaging/telegram-origin/OriginStageDeadlines.js';
 import { setMacDesktopHelperBudgetScale } from '../src/core/MacDesktopHelperBudget.js';
+import { setPerItemRoutingClockForTests } from '../src/messaging/attentionRoutingMode.js';
+
+// The legacy per-item attention routing mode stops working on its removal date (2027-03-01,
+// src/messaging/attentionRoutingMode.ts). Six test files exercise that legacy path on purpose; the
+// resolver's clock is pinned to a day well before the date so they do not turn red on a calendar
+// date. The removal itself (deleting the mode and those tests) is a tracked commitment, and the
+// resolver's own tests pass explicit dates.
+setPerItemRoutingClockForTests(() => Date.parse('2026-12-01T00:00:00Z'));
 
 // Telegram-origin recording budgets: lifted for every test file.
 //

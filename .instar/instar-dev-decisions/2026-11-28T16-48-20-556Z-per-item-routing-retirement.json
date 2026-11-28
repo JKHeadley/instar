@@ -1,0 +1,105 @@
+{
+  "ts": "2026-11-28T16:48:20.556Z",
+  "slug": "per-item-routing-retirement",
+  "headCommit": "3c1501ac1a064d142bac502802d3c0fcec0c88ba",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 70,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/awareness/per-item-attention-routing-retired.md",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/attentionRoutingMode.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 65,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "judgment": {
+    "version": 1,
+    "tierReasoning": "Dated deprecation of a legacy Telegram attention routing mode with a startup warning, a source ratchet and agent instruction text; no authority change.",
+    "trace": {
+      "path": ".instar/instar-dev-traces/2026-11-28T16-48-00-402Z-per-item-routing-retirement-eea5ca23.json",
+      "hash": "5feefb3f95bd91288f9592d95e88869a15ba10bd",
+      "staged": true
+    },
+    "traceDiffers": false,
+    "artifact": {
+      "path": "upgrades/side-effects/per-item-routing-retirement.md",
+      "hash": "84173a74d42c70c3e432a41c64cdf6678a85aef5",
+      "stagedHash": "84173a74d42c70c3e432a41c64cdf6678a85aef5"
+    },
+    "spec": null,
+    "template": "a33b7e354c2b936bb350305efddc4de1f6e1d658",
+    "headings": {
+      "1. Over-block": "missing",
+      "2. Under-block": "missing",
+      "3. Level-of-abstraction fit": "missing",
+      "4. Signal vs authority compliance": "missing",
+      "4b. Judgment-point check": "missing",
+      "5. Interactions": "missing",
+      "6. External surfaces": "missing",
+      "7. Multi-machine posture": "missing",
+      "8. Rollback cost": "missing",
+      "6b. Operator-surface quality": {
+        "present": true,
+        "chars": 139
+      },
+      "Second-pass review": {
+        "present": true,
+        "chars": 941
+      }
+    },
+    "secondPassStatus": "required-concurred",
+    "perFileLines": [
+      {
+        "path": "src/core/PostUpdateMigrator.ts",
+        "added": 12,
+        "deleted": 1,
+        "baseBlob": "17f615a4246e32e3eedae38f296a05608b14498a",
+        "stagedBlob": "e0bdd71ee3c5c67213b79f8eed97bd5f08eecf12"
+      },
+      {
+        "path": "src/data/awareness/per-item-attention-routing-retired.md",
+        "added": 5,
+        "deleted": 0,
+        "baseBlob": null,
+        "stagedBlob": "dcc274d297ae25bf1957cfd957d552442fb32076"
+      },
+      {
+        "path": "src/messaging/TelegramAdapter.ts",
+        "added": 10,
+        "deleted": 3,
+        "baseBlob": "ac4b8264a16b54a425fed861e14b25d6859d5691",
+        "stagedBlob": "e3da698b38285702c79615c5483866b848e5a0b6"
+      },
+      {
+        "path": "src/messaging/attentionRoutingMode.ts",
+        "added": 37,
+        "deleted": 0,
+        "baseBlob": null,
+        "stagedBlob": "eda126f107cb75d1bef1cb60c1596a811e475a41"
+      },
+      {
+        "path": "src/scaffold/templates.ts",
+        "added": 1,
+        "deleted": 1,
+        "baseBlob": "1b648b64970a240a8deb95a1b478173513aa5879",
+        "stagedBlob": "b93850119b9ca70b1334ed2cd1237ef3467f21fc"
+      }
+    ]
+  }
+}
