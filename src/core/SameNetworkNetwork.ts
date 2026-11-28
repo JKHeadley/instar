@@ -136,26 +136,90 @@ export async function observeNetwork(deps: ObserveDeps = {}): Promise<NetworkObs
   }
 }
 
-function inWslNatRange(ip: string): boolean {
+/**
+ * The RFC 1918 block an IPv4 address sits in (10/8, 172.16/12, 192.168/16), or null. WSL picks its NAT
+ * network from these, usually 172.16/12. When the PC's own network or a VPN already uses 172.16/12 it
+ * picks another: observed live 2026-11-26, a host on 172.24.x gave WSL 192.168.144.0/20. 10/8 is
+ * accepted by the same rule but has not been observed.
+ */
+export function rfc1918Block(ip: string): '10/8' | '172.16/12' | '192.168/16' | null {
   const p = ip.split('.').map(Number);
-  return p.length === 4 && p[0] === 172 && p[1] >= 16 && p[1] <= 31;
+  if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  if (p[0] === 10) return '10/8';
+  if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return '172.16/12';
+  if (p[0] === 192 && p[1] === 168) return '192.168/16';
+  return null;
+}
+
+/**
+ * Whether a network interface is positively WSL's own NAT adapter: a Hyper-V synthetic NIC, whose
+ * /sys/class/net/<iface>/device/driver resolves to `hv_netvsc`, and the ONLY such NIC (identity A4 WSL
+ * bind, 2026-11-26: the identity session required a POSITIVE discriminator, not the absence of a tunnel
+ * marker, and the bind closed when ownership is ambiguous). It refuses a default route on a VPN tunnel or
+ * any other non-Hyper-V interface: tunnels, bridges, VLANs and macvlan have no device link (an EXPECTED
+ * ENOENT, read as 'not Hyper-V'; a regular file such as bonding_masters gives ENOTDIR, read the same way). An UNEXPECTED read error on any interface, an unlistable
+ * /sys/class/net, an odd name, or a second Hyper-V NIC means uniqueness cannot be established: false. This does NOT tell NAT
+ * from mirrored mode (mirrored NICs are Hyper-V NICs too): the READ mode guards that.
+ */
+export function isWslNatAdapter(
+  iface: string,
+  realpath: (p: string) => string = fs.realpathSync,
+  listInterfaces: () => string[] = () => fs.readdirSync('/sys/class/net'),
+): boolean {
+  const plain = (n: string) => /^[A-Za-z0-9_.:-]{1,15}$/.test(n) && n !== '.' && n !== '..';
+  if (!plain(iface)) return false;
+  // 'hv': a Hyper-V synthetic NIC. 'other': no device link (ENOENT, expected for tun, tap, wg, ppp, bridges,
+  // VLANs, lo), a regular file such as bonding_masters (ENOTDIR), or another driver. 'error': any other read failure, which means the answer is not known.
+  const driverOf = (n: string): 'hv' | 'other' | 'error' => {
+    try {
+      return path.basename(realpath(`/sys/class/net/${n}/device/driver`)) === 'hv_netvsc' ? 'hv' : 'other';
+    } catch (err) {
+      // @silent-fallback-ok — ENOENT is the expected absent device link of a virtual interface, and ENOTDIR is a
+      // regular file in /sys/class/net (bonding_masters when bonding is built in), not an interface; anything else
+      // is reported as 'error', which closes the bind
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return code === 'ENOENT' || code === 'ENOTDIR' ? 'other' : 'error';
+    }
+  };
+  if (driverOf(iface) !== 'hv') return false;
+  // Ambiguity closes the bind (identity 163a07b2): exactly ONE Hyper-V synthetic NIC, and it is this one.
+  // An unexpected read error on any interface means uniqueness cannot be established: closed.
+  let names: string[];
+  try { names = listInterfaces(); } catch { return false; } // @silent-fallback-ok — unlistable means not provably the only one: closed
+  const hv: string[] = [];
+  for (const n of names) {
+    if (!plain(n)) return false; // an interface name we cannot read safely: uniqueness unknown, closed
+    const d = driverOf(n);
+    if (d === 'error') return false;
+    if (d === 'hv') hv.push(n);
+  }
+  return hv.length === 1 && hv[0] === iface;
 }
 
 /**
  * Inside WSL in NAT mode: WSL's own address on its private virtual network (the PC can reach it; the
  * LAN cannot, because WSL's NAT is not exposed). This is a SHAPE check only, never the evidence of NAT
- * mode: a mirrored WSL on a 172.16-31.x home network has the same shape. The mode itself is read by
- * `readWslNetworkingMode` and decided by `wslBindPlan`. Null when the shape does not fit: the default
- * route's interface must have exactly one IPv4 address, and it and the router must both sit in
- * 172.16.0.0/12 on the same network.
+ * mode: a mirrored WSL on a home network has the same shape. The mode itself is read by
+ * `readWslNetworkingMode` and decided by `wslBindPlan`, which binds this address only when NAT mode was
+ * READ. Null when the shape does not fit: the default route's interface must have exactly one
+ * non-loopback IPv4 address, and it and the router must sit in the SAME RFC 1918 block and on that
+ * interface's subnet (identity A4 WSL bind, widened from 172.16.0.0/12 only on 2026-11-26, approved by
+ * the identity session), and the interface must be positively WSL's own NAT adapter (`isWslNatAdapter`),
+ * so a VPN inside WSL that owns the default route is never bound, whatever its range.
  */
-export function wslNatAddress(table: string, interfaces: ReturnType<typeof os.networkInterfaces>): string | null {
+export function wslNatAddress(
+  table: string,
+  interfaces: ReturnType<typeof os.networkInterfaces>,
+  isNatAdapter: (iface: string) => boolean = (iface) => isWslNatAdapter(iface),
+): string | null {
   const route = defaultRouteFromProcRoute(table);
   if (!route) return null;
+  if (!isNatAdapter(route.iface)) return null;
   const addrs = (interfaces[route.iface] ?? []).filter((a) => a.family === 'IPv4' && !a.internal);
   if (addrs.length !== 1) return null;
   const a = addrs[0];
-  if (!inWslNatRange(a.address) || !inWslNatRange(route.router)) return null;
+  const block = rfc1918Block(a.address);
+  if (!block || rfc1918Block(route.router) !== block) return null;
   const net = rangeOf(a.address, a.netmask);
   const rnet = rangeOf(route.router, a.netmask);
   return net && net === rnet ? a.address : null;

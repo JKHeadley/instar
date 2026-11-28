@@ -10,13 +10,13 @@ sibling-principles: "Structure > Willpower; Bounded Blast Radius; An Instar Agen
 parent-spec: "install-experience.md §6 'Same network' and frontloaded decisions 3 and 6 (approved by Justin 2026-11-02, never built); identity-security-levels.md (approved by Justin 2026-11-17 19:34 PST, topic 144636) decision 5; the draft amendment A4 (and the surface part of A5) in owner-identity-merged.md, reviewed three rounds, owned by the identity session (topic 144636)"
 depends-on: "mobile pairing (mobile-pairing-link, mobile-native-conversations §4.4), the device-key registry and ledger"
 lessons-engaged: "a-dark-guard-is-worse-than-no-guard, a-filtered-query-cannot-see-what-it-filters-out, verify-in-the-design-layer-not-just-code"
-review-convergence: "2026-11-19T23:30:00Z"
+review-convergence: "2026-11-27T02:45:00Z"
 review-iterations: 3
-review-completed-at: "2026-11-19T23:30:00Z"
+review-completed-at: "2026-11-27T02:45:00Z"
 cross-model-review: "GPT (codex gpt-6.2-sol, read-only) on 2026-11-20, builder #45: four blockers, all confirmed and fixed (round 4 in the convergence report); the fixes were not re-reviewed. Earlier rounds: Opus only (the Fable reviewers hit their quota, resets 2026-11-25), and a first GPT attempt was refused by OpenAI's filter."
 review-report: "reports/identity-security-piece3e-same-network-first-phone-convergence.md"
 approved: true
-approved-by: "Agent approval (Echo, builder #38) under install-experience §6, which Justin approved on 2026-11-02 and which chose this same-network design, and under the approved umbrella identity-security-levels.md decision 5; Justin's standing guidance that only constitution changes need his approval (2026-10-22). No constitution text changes here. The A4 amendment text this follows is a draft owned by the identity session (topic 144636): this branch is pushed for that session to review, with no pull request opened. Amended by builder #40 (2026-11-19: the home port in §3.1 and the A5 ceremony credential in §4.6) under the same basis, after one independent review round (round 3 in the convergence report); §4.6 choice a is left to the identity session. Amended by builder #45 (2026-11-20: §3.1 WSL networking mode read and fail-closed bind plan; the same-network signature requirement in the auth middleware; document devices) under the same basis, after one independent Opus second pass and one outside GPT review (round 4 in the convergence report). Amended by builder #47 (2026-11-20: §4.3 signing window capped at the phone's pending expiry, and the lifecycle rules after GPT reviews 3 and 4) under the same basis. Amended by builder #51 (2026-11-20: §4.3 a lapsed setup declines its waiting phone, after GPT review 5) under the same basis."
+approved-by: "Agent approval (Echo, builder #38) under install-experience §6, which Justin approved on 2026-11-02 and which chose this same-network design, and under the approved umbrella identity-security-levels.md decision 5; Justin's standing guidance that only constitution changes need his approval (2026-10-22). No constitution text changes here. The A4 amendment text this follows is a draft owned by the identity session (topic 144636): this branch is pushed for that session to review, with no pull request opened. Amended by builder #40 (2026-11-19: the home port in §3.1 and the A5 ceremony credential in §4.6) under the same basis, after one independent review round (round 3 in the convergence report); §4.6 choice a is left to the identity session. Amended by builder #45 (2026-11-20: §3.1 WSL networking mode read and fail-closed bind plan; the same-network signature requirement in the auth middleware; document devices) under the same basis, after one independent Opus second pass and one outside GPT review (round 4 in the convergence report). Amended by builder #47 (2026-11-20: §4.3 signing window capped at the phone's pending expiry, and the lifecycle rules after GPT reviews 3 and 4) under the same basis. Amended by builder #51 (2026-11-20: §4.3 a lapsed setup declines its waiting phone, after GPT review 5) under the same basis. Amended 2026-11-26 (Windows App, topic 144319: §3.1 WSL NAT shape accepts every RFC 1918 block, found live) on the requirement the identity session approved that day (topic 144636, message 39a4fdcf), after one independent Opus second-pass review whose two concerns were resolved; the in-WSL VPN case was closed by the positive adapter check the identity session ruled the same day (message 163a07b2), after a second review round."
 ---
 
 # A new agent's first phone pairs over the same network
@@ -90,7 +90,7 @@ mode): a listener on WSL's loopback is not reachable from Windows at all (only t
 every address, was), so the pass-through would have nothing to forward to. WSL's NAT address is reachable
 from the PC and not from the LAN, which keeps A4's rule that the pass-through is the only way in from the
 network. NAT mode is READ, never inferred from the address range (builder #45: a mirrored WSL on a
-172.16-31.x home network has the same shape, and binding its LAN address with the per-address limit off
+private-range home network has the same shape, and binding its LAN address with the per-address limit off
 would have skipped both protections). The reading, in order of trust (`readWslNetworkingMode`): WSL 1
 (no virtual network) is never NAT; `wslinfo --networking-mode` where it exists (WSL 2.0+) is authoritative;
 otherwise the Windows user's `.wslconfig` (`[wsl2] networkingMode`, or the older `[experimental]` key) read
@@ -98,8 +98,49 @@ through `/mnt/c` with the profile folder from interop, else WSL 2's default, NAT
 names no mode; a `.wslconfig` changed after WSL started (or within 10 minutes before, for clock drift) reads as
 unknown, and so does a missing `.wslconfig` when `wslinfo` cannot answer (a file removed after a mirrored WSL
 started leaves no trace). VirtioProxy's other name, `consomme`, and any other value read as unknown (closed). The bind plan (`wslBindPlan`) fails closed:
-- NAT, read, with WSL's own NAT address (shape-checked as before): bind it; the per-address limit is the
-  pass-through's (every caller arrives from its one address).
+- NAT, read, with WSL's own NAT address (shape-checked): bind it; the per-address limit is the
+  pass-through's (every caller arrives from its one address). The shape (`wslNatAddress`): the default
+  route's interface has exactly one non-loopback IPv4 address, and that address and the router sit in the
+  SAME RFC 1918 block (10/8, 172.16/12 or 192.168/16) and on that interface's subnet. **A change from the
+  first build, found live** (2026-11-26, Windows 11 VM, WSL in NAT mode): the shape first accepted
+  172.16.0.0/12 only, but WSL picks another private range for its NAT network when the PC's own network
+  or a VPN already uses 172.16/12. Observed: a host on 172.24.x gave WSL 192.168.144.0/20. 10/8 is
+  accepted by the same rule but has not been observed. In that run and Connect your phone was
+  refused (`409`, "WSL is in NAT mode but its own NAT address could not be read") in one run of two. The
+  identity session approved the widening on 2026-11-26 (topic 144636). What it costs: a mirrored WSL on a
+  10.x or 192.168.x home network now also has the shape (before, only one on 172.16/12 did), so the READ
+  mode below is the only thing that keeps a LAN address from being bound with the per-address limit off.
+  That was already the rule (builder #45), and the plan never binds a NAT address unless the mode read is
+  NAT. A SEPARATE requirement from the trusted mode read: the default-route interface must be the single
+  verified Hyper-V adapter (`isWslNatAdapter`): its
+  `/sys/class/net/<iface>/device/driver` resolves to `hv_netvsc`, the Hyper-V synthetic NIC WSL 2 gives
+  Linux. Found in the independent review: in NAT mode the default route's interface is not always WSL's
+  adapter. A VPN client INSIDE WSL that replaces the default route (for example OpenVPN `redirect-gateway`
+  without `def1`, on tun0 with 10.8.0.2 and router 10.8.0.1) has the shape, and binding it with the
+  per-address limit off would let the VPN's side reach the listener without the Windows pass-through. The
+  first build had that exposure for a VPN on 172.16/12; the widening would have extended it to 10/8 and
+  192.168/16. The identity session ruled (2026-11-26, message 163a07b2) that only a positively identified
+  adapter may be bound: the absence of a tunnel marker is not enough. What it refuses: a default route on a
+  VPN tunnel or any other non-Hyper-V interface (tun, tap, wg, ppp, bridges, VLANs, macvlan), in every
+  range. Two different no-answers are kept apart. An EXPECTED absent device link (ENOENT), which is normal
+  for a virtual interface, means "not Hyper-V". A regular file in `/sys/class/net` (`bonding_masters`
+  when bonding is built into the kernel) gives ENOTDIR and is read the same way: it is not an interface
+  (independent pre-queue review, 2026-11-27). An UNEXPECTED read error on any interface (permission,
+  I/O), an unlistable `/sys/class/net`, or an interface name that is not a plain name (no slashes, at most
+  15 characters) means uniqueness cannot be established, and the bind stays closed.
+  It must also be the ONLY Hyper-V NIC: a second one makes ownership ambiguous and closes the bind. The
+  discriminator was verified on the affected Windows 11 VM on 2026-11-26. In NAT mode eth0 was the only
+  hv_netvsc interface, and its gateway equalled Windows' vEthernet (WSL) address. tun0 and wg0 default
+  routes on 10.8.0.0/24 and 172.30.0.0/24 had no device link. In mirrored mode a second hv_netvsc device
+  (loopback0) appears, which is one more reason the NAT address is read only when the mode read is NAT
+  (evidence: upgrades/side-effects/wsl-nat-rfc1918.md). What each check guards: the READ mode is what keeps a mirrored or bridged LAN
+  address from being bound (mirrored and bridged NICs are Hyper-V NICs too, so the adapter check cannot
+  tell them from NAT); the adapter check is what refuses a tunnel, bridge, VLAN or other virtual interface
+  that owns the default route; and the private same-block, same-subnet pair with one address is the shape
+  of WSL's NAT network on that adapter. When the shape still does not
+  fit, the Windows app will show the recovery in plain words with one tap (try again, or switch WSL to
+  mirrored mode, where the app handles the network rule) instead of a dead end. That is a Windows app change,
+  built separately in the Windows app repository.
 - mirrored: closed (`409 wsl-networking-mode`), unless the Windows app says it enforces the network rule
   (`windowsAppHandlesNetworkRule: true` in `POST /mobile/phone-setup`, stored with the wish and forgotten
   on close). Then it binds loopback (shared with Windows in mirrored mode, never the LAN) and the
