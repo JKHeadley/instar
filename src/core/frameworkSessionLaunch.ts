@@ -13,6 +13,7 @@
  * forces a compile error if a case is missed.
  */
 
+import { jobModeSettingsJson } from '../scheduler/jobModeLaunch.js';
 import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import { CODEX_TOOL_TIMEOUT_SEC } from './threadlineMcpSpawn.js';
 import fs from 'node:fs';
@@ -1515,11 +1516,23 @@ export function claudeHeadlessExtraFlags(opts: {
   /** Feedback executor confinement adapter: the policy `--settings` file, loaded with only the
    *  `local` setting source so no user or project hooks run in the confined session. */
   confinementSettingsPath?: string;
+  /** Job-mode instructions (docs/specs/job-mode-instructions.md, Change 4): exclude the agent home's
+   *  CLAUDE.md, AGENTS.md and .claude/CLAUDE.md, turn auto-memory off, append the rendered job-mode
+   *  text, and pin the Claude session id so the transcript can be checked. Never combined with a
+   *  confinement settings file (the caller skips job-mode for restricted spawns; this guard keeps a
+   *  second `--settings` impossible). */
+  jobMode?: { agentHome: string; text: string; sessionId: string };
 }): string[] {
   if (opts.framework !== 'claude-code') return [];
   const flags: string[] = [];
   if (opts.confinementSettingsPath) {
     flags.push('--settings', opts.confinementSettingsPath, '--setting-sources', 'local');
+  } else if (opts.jobMode) {
+    flags.push(
+      '--settings', jobModeSettingsJson(opts.jobMode.agentHome),
+      '--append-system-prompt', opts.jobMode.text,
+      '--session-id', opts.jobMode.sessionId,
+    );
   }
   if (opts.allowedTools && opts.allowedTools.length > 0) {
     flags.push('--allowedTools', opts.allowedTools.join(','));

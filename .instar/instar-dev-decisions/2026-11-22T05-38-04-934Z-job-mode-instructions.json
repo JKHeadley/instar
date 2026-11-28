@@ -1,0 +1,47 @@
+{
+  "ts": "2026-11-22T05:38:04.934Z",
+  "slug": "job-mode-instructions",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: src/commands/jobMigrate.ts touches migrate*() migration family",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 1323,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/jobMigrate.ts",
+      "src/core/SessionManager.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/core/types.ts",
+      "src/data/awareness/job-mode-instructions.md",
+      "src/scaffold/templates.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/jobModeCheckStore.ts",
+      "src/scheduler/jobModeInstructions.ts",
+      "src/scheduler/jobModeLaunch.ts",
+      "src/scheduler/jobModePositiveControl.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1316,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Positive-control probes are paced by controlRerunDue over a persisted record: one three-probe attempt per version and account, an error retried at most every 6 hours, a success reused 7 days; registered as job-mode-positive-control with a 6-hour rate floor. Scheduler fallback paths only change launch flags (no restart/notify/retry of jobs)."
+    }
+  },
+  "verdict": "blocked"
+}

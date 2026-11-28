@@ -209,6 +209,20 @@ export interface Session {
    */
   launch?: JobRunLaunch;
   /**
+   * Job-mode instructions (docs/specs/job-mode-instructions.md): whether the short job-mode launch
+   * was applied, or why not. Records the marker version and text length, never the text.
+   */
+  jobMode?: {
+    applied: boolean; lane?: 'headless' | 'rerouted-interactive';
+    /** The project folder the launcher built the exclusions from (the check uses the same one). */
+    agentHome?: string;
+    reason?: string;
+    claudeSessionId?: string;
+    configHome?: string;
+    markerVersion: string;
+    textBytes: number;
+  };
+  /**
    * Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D4):
    * the transport this session's Threadline tools were given at spawn. Persisted
    * so `/health`'s transport counts survive a restart; absent on a record that
@@ -710,6 +724,10 @@ export interface JobDefinition {
    *  jobs.json entries do NOT carry this field (left undefined). See
    *  docs/specs/INSTAR-JOBS-AS-AGENTMD-SPEC.md §"Two namespaces". */
   origin?: 'instar' | 'user';
+  /** Job-mode instructions (docs/specs/job-mode-instructions.md, Change 3): a jobs.json entry's
+   *  own choice of `"job-mode"` (short launch instructions) or `"full"`. Not accepted in Markdown
+   *  job frontmatter; those jobs use `scheduler.instructionsOverrides`. */
+  instructions?: 'job-mode' | 'full';
   /** Cached markdown body for execute.type === "agentmd" entries.
    *  Populated once at load time so buildPrompt never opens a file. */
   body?: string;
