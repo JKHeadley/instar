@@ -2119,7 +2119,7 @@ export interface RouteContext {
   desktopTargetSigningKey?: (machineId: string) => string | null;
   /** Other pool machines a pool status read should ask. */
   desktopTargets?: () => string[];
-  desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
+  desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string; checkFailure?: string }>;
   /** Guided setup: reachable with desktop off, because it is how desktop comes on. */
   desktopSetupTarget?: import('../core/DesktopSetupTarget.js').DesktopSetupTarget | null;
   desktopSetupPeerCall?: (machineId: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -16280,7 +16280,9 @@ export function createRoutes(ctx: RouteContext): Router {
       try {
         if (!ctx.desktopMeshBroker || !ctx.desktopProbePeer) throw new Error('desktop-peer-unavailable');
         // The pool's name wins: a peer's own copy of the registry can lag a rename.
-        const probed = await ctx.desktopProbePeer(peer.machineId);
+        const { checkFailure, ...probed } = await ctx.desktopProbePeer(peer.machineId);
+        // The peer answered, but could not check its own desktop: log its fixed word, never show it.
+        if (checkFailure) console.warn(`[desktop] ${peer.machineId} could not check its own desktop: ${checkFailure} after ${Date.now() - checkStarted} ms`);
         return { ...probed, label: verifiedEntityName(peer.machineId, peer.nickname) ?? probed.label };
       } catch (error) {
         // The viewer shows one plain sentence; the log keeps the fixed reason and the time taken.

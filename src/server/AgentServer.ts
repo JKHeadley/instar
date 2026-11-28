@@ -340,7 +340,7 @@ import { WindowsDesktopHost, resolveWindowsDesktopVideo } from '../core/WindowsD
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
-import { desktopPeerRopes, fetchDesktopPeerOverRopes } from './desktopPeerRopeFetch.js';
+import { desktopPeerRopes, fetchDesktopPeerOverRopes, desktopOwnCheckReason, DESKTOP_CHECK_FAILURE_RE } from './desktopPeerRopeFetch.js';
 import { desktopRouteAccess } from './desktopRouteContext.js';
 import { parsePeerDesktopSetup, readBoundedText } from './desktopSetupRoutes.js';
 import type { DesktopHost } from '../core/DesktopHost.js';
@@ -2838,11 +2838,15 @@ export class AgentServer {
           if (!this.directDesktopAccess) throw new Error('desktop-target-unavailable');
           const target = this.directDesktopAccess.targetInfo();
           let probe: Awaited<ReturnType<DirectDesktopAccess['probe']>>;
+          const checkStarted = Date.now();
           try {
             probe = await this.directDesktopAccess.probe();
-          } catch {
+          } catch (error) {
+            // A fixed word for the asking front's log, and the same line here.
+            const checkFailure = desktopOwnCheckReason(error);
+            console.warn(`[desktop] could not check this machine's desktop for a peer: ${checkFailure} after ${Date.now() - checkStarted} ms`);
             return { ...target, ready: false,
-              unavailableReason: DESKTOP_CHECK_FAILED_REASON };
+              unavailableReason: DESKTOP_CHECK_FAILED_REASON, checkFailure };
           }
           const reason = desktopProbeUnavailableReason(probe);
           return { ...target, ready: probe.ready,
@@ -7189,12 +7193,13 @@ export class AgentServer {
           chunks.push(value);
         }
         const raw = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)), bytes).toString('utf8');
-        const result = JSON.parse(raw) as { machineId?: unknown; label?: unknown; ready?: unknown; unavailableReason?: unknown };
+        const result = JSON.parse(raw) as { machineId?: unknown; label?: unknown; ready?: unknown; unavailableReason?: unknown; checkFailure?: unknown };
         if (result.machineId !== machineId || typeof result.label !== 'string' || typeof result.ready !== 'boolean') {
           throw new Error('desktop-peer-identity-mismatch');
         }
         return { machineId, label: result.label.slice(0, 80), ready: result.ready,
-          ...(typeof result.unavailableReason === 'string' ? { unavailableReason: result.unavailableReason.slice(0, DESKTOP_PEER_REASON_MAX) } : {}) };
+          ...(typeof result.unavailableReason === 'string' ? { unavailableReason: result.unavailableReason.slice(0, DESKTOP_PEER_REASON_MAX) } : {}),
+          ...(typeof result.checkFailure === 'string' && DESKTOP_CHECK_FAILURE_RE.test(result.checkFailure) ? { checkFailure: result.checkFailure } : {}) };
       },
       selfUnblockRunStore: this.selfUnblockRunStore,
       selfUnblockChecklist: this.selfUnblockChecklist,

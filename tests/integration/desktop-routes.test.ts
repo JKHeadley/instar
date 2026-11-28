@@ -82,6 +82,28 @@ describe('remote desktop HTTP routes', () => {
     expect(retry.body.machines[1]).not.toHaveProperty('unavailableReason');
   });
 
+  it('logs a peer\'s own check failure word and never shows it to the viewer', async () => {
+    const remoteId = `m_${'b'.repeat(32)}`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { server } = app(fakeAccess(), {
+        listPoolMachines: () => [{ machineId: remoteId, nickname: 'PC' }],
+        desktopMeshBroker: {} as RouteContext['desktopMeshBroker'],
+        desktopProbePeer: async () => ({ machineId: remoteId, label: 'PC', ready: false,
+          unavailableReason: 'Could not check this machine’s desktop. Select Check again to retry.',
+          checkFailure: 'windows-desktop-companion-refused' }),
+      });
+      const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-Operator-Session': 'operator-proof' };
+      const listed = await request(server).get('/desktop/targets').set(headers).expect(200);
+      expect(listed.body.machines[1]).toMatchObject({ machineId: remoteId, ready: false });
+      expect(listed.body.machines[1]).not.toHaveProperty('checkFailure');
+      expect(warn.mock.calls.map(c => String(c[0])).some(line =>
+        line.includes(`${remoteId} could not check its own desktop: windows-desktop-companion-refused after`))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('permits only explicit enabled-state rollout through the config API', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-config-'));
     const stateDir = path.join(root, '.instar');

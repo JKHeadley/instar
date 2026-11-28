@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
+  DESKTOP_CHECK_FAILURE_RE,
+  desktopOwnCheckReason,
   desktopPeerCheckReason,
   desktopPeerRopes,
   fetchDesktopPeerOverRopes,
@@ -199,5 +201,27 @@ describe('desktopPeerCheckReason', () => {
     expect(desktopPeerCheckReason(Object.assign(new Error('peer-starting'), { name: 'PoolPeerBootingError' }))).toBe('starting');
     expect(desktopPeerCheckReason(new SyntaxError('Unexpected token < in JSON'))).toBe('reply-invalid');
     expect(desktopPeerCheckReason(Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket'), { code: 'UND_ERR_SOCKET' }) }))).toBe('reset');
+  });
+});
+
+describe('desktopOwnCheckReason', () => {
+  it('names a failed own-desktop check with a fixed word the front may log', () => {
+    expect(desktopOwnCheckReason(new DOMException('This operation was aborted', 'AbortError'))).toBe('timeout');
+    expect(desktopOwnCheckReason(new Error('windows-desktop-companion-refused'))).toBe('windows-desktop-companion-refused');
+    expect(desktopOwnCheckReason(new Error('windows-desktop-probe-invalid'))).toBe('windows-desktop-probe-invalid');
+    expect(desktopOwnCheckReason(connectRefused())).toBe('connect');
+    expect(desktopOwnCheckReason(Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket'), { code: 'ECONNRESET' }) }))).toBe('reset');
+    expect(desktopOwnCheckReason(new Error('helper said: user Alice at /Users/alice'))).toBe('other');
+    expect(desktopOwnCheckReason(new Error('windows-desktop-Bad Text'))).toBe('other');
+    expect(desktopOwnCheckReason(undefined)).toBe('other');
+  });
+
+  it('every word it can return passes the front check, and free text does not', () => {
+    for (const word of ['timeout', 'connect', 'reset', 'other', 'windows-desktop-video-stalled']) {
+      expect(DESKTOP_CHECK_FAILURE_RE.test(word)).toBe(true);
+    }
+    for (const bad of ['', 'Could not check', 'a b', 'x'.repeat(61), 'path/to', 'ÄÖ']) {
+      expect(DESKTOP_CHECK_FAILURE_RE.test(bad)).toBe(false);
+    }
   });
 });

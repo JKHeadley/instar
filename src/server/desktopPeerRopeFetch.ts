@@ -182,6 +182,23 @@ export function desktopPeerCheckReason(error: unknown): string {
   return 'other';
 }
 
+/**
+ * Why this machine could not check its own desktop when a peer asked: a fixed
+ * word that rides in the availability reply (`checkFailure`), so the front's log
+ * can say why. Only fixed strings from our own code pass; anything else is `other`.
+ */
+export function desktopOwnCheckReason(error: unknown): string {
+  const e = error as { name?: unknown; message?: unknown } | null;
+  if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) return 'timeout';
+  if (e && typeof e.message === 'string' && /^windows-desktop-[a-z-]{1,40}$/.test(e.message)) return e.message;
+  if (isConnectClassFailure(error)) return 'connect';
+  if (hasCauseCode(error, RESET_CODES)) return 'reset';
+  return 'other';
+}
+
+/** The shape a peer's `checkFailure` must have before the front logs it. */
+export const DESKTOP_CHECK_FAILURE_RE = /^[a-z0-9-]{1,60}$/;
+
 const RESET_CODES = new Set(['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
 
 function hasCauseCode(error: unknown, codes: Set<string>): boolean {
