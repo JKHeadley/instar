@@ -14,6 +14,27 @@ afterEach(async () => {
   finally { vi.restoreAllMocks(); vi.unstubAllGlobals(); }
 });
 
+/** Recovery is a repeated pass by contract: a pass that skips a due reply (a busy store, a hold
+ * still settling under load) leaves it eligible for the next pass. The full unit suite on a loaded
+ * Studio once saw the first pass after the wait process nothing, so a single pass is not the
+ * contract to assert. Run passes until one sends, bounded; if none does, fail with the stored
+ * attempts and what the store considers recoverable, never a bare count. */
+async function recoverUntilSent(h: Awaited<ReturnType<typeof lateCapacityHarness>>, boundMs = 15_000): Promise<number> {
+  const passes: Array<{ processed: number; recovered: number }> = [];
+  const end = Date.now() + boundMs;
+  while (Date.now() < end) {
+    const pass = await h.runtime.recoverHeld();
+    passes.push(pass);
+    if (pass.recovered > 0) return pass.recovered;
+    await delay(250);
+  }
+  const recoverable = await h.runtime.store.recoverableAdmissions();
+  const row = (await h.runtime.store.listOrigins()).records[0];
+  const attempts = row?.attempts.map(attempt => ({ outcome: attempt.outcome, reason: attempt.reason, nextAttemptAt: attempt.nextAttemptAt }));
+  throw new Error(`no recovery pass sent the held reply within ${boundMs} ms: passes ${JSON.stringify(passes)}; `
+    + `recoverable now ${recoverable.length}; now ${Date.now()}; attempts ${JSON.stringify(attempts)}`);
+}
+
 describe('origin recovery history representation', () => {
   it.each(['Markdown', 'plain'])('retains original %s queue text before import formatting', async format => {
     const h = await lateCapacityHarness(worker);
@@ -53,7 +74,7 @@ describe('origin recovery history representation', () => {
     const waitMs = Math.max(0, nextAt! - Date.now() + 10);
     expect(waitMs).toBeLessThanOrEqual(31_000);
     if (waitMs) await delay(waitMs);
-    expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 1 });
+    expect(await recoverUntilSent(h)).toBe(1);
     expect(h.network).toHaveBeenCalledOnce();
     const wire = JSON.parse(h.network.mock.calls[0][1].body as string);
     expect(wire.parse_mode).toBe('HTML');
