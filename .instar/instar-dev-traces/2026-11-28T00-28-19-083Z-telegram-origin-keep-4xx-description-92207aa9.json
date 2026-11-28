@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "telegram-origin-keep-4xx-description",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-28T00:28:19.083Z",
+  "artifactPath": "upgrades/side-effects/telegram-origin-keep-4xx-description.md",
+  "artifactSha256": "186d16dfad5ab2e9897c811e27586c10d7792b9e7f0c611eb2cc049b6070beca",
+  "coveredFiles": [
+    "docs/specs/telegram-origin-keep-4xx-description.eli16.md",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "upgrades/next/telegram-origin-keep-4xx-description.md",
+    "upgrades/side-effects/telegram-origin-keep-4xx-description.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Logging only: a Telegram 4xx refusal writes one bounded line with Telegram's description and the refused request's shape (no text); outcome recording, retry, hold error and the edit-rejection record are unchanged; a revert restores the old behaviour.",
+  "eli16Path": "docs/specs/telegram-origin-keep-4xx-description.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-origin-keep-4xx-description.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
