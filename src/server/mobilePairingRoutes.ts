@@ -2600,6 +2600,8 @@ function publicDeviceView(d: DeviceRecord, machine: string | null, svc?: MobileP
   const showFingerprint = status === 'active' || status === 'revoked';
   return {
     id: d.id, deviceName: d.deviceName, label: d.label, pairedAt: d.pairedAt, status, ...(svc ? personFields(d, svc) : {}),
+    deviceKind: d.deviceKind ?? (isBrowserDevice(d) || d.localBinding ? 'computer' : 'phone'),
+    ...(isBrowserDevice(d) && (d.scope === 'documents' || d.scope === 'documents-read') ? { linkedForDocuments: true } : {}),
     ...(isBrowserDevice(d) ? { client: 'browser', lastSeenAt: d.lastSeenAt ?? null, ...(svc && !svc.browserOn() ? { switchedOff: true } : {}) } : {}),
     ...(showFingerprint && d.fingerprint ? { fingerprint: d.fingerprint } : {}),
     ...(d.approvedAt ? { approvedAt: d.approvedAt } : {}), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}),

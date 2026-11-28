@@ -87,7 +87,7 @@ describe('mobile pairing — production wiring', () => {
     // The conversation list's recency read is on the device allowlist (not refused for a device).
     expect([401, 403]).not.toContain((await send('GET', '/topic/list')).status);
     const d = await request(app).get('/mobile/devices').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'mp-e2e');
-    expect(d.body.devices[0]).toMatchObject({ deviceName: 'e2e phone', status: 'active' });
+    expect(d.body.devices[0]).toMatchObject({ deviceName: 'e2e phone', status: 'active', deviceKind: 'phone' });
     // Operator chat (mobile-operator-chat): the device-only route is mounted and its inbound core is
     // wired (ctx.mobileInbound is real); with no Telegram owner on this boot it answers 503 by name.
     const rid = `${Date.now()}-${crypto.randomUUID()}`;

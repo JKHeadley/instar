@@ -8,7 +8,7 @@
 // - The page is served with a strict Content-Security-Policy (no inline script, nothing
 //   third-party); keep it that way: no inline handlers, no style attributes, no external URLs.
 
-import { deviceFromHash, shownApprovals, prettyCode, copyText, waitingLine, waitingHeadline, approveHint, pairedGroups } from './pair-model.js';
+import { deviceFromHash, shownApprovals, prettyCode, copyText, waitingLine, waitingHeadline, approveHint, pairedDeviceRows } from './pair-model.js';
 
 const POLL_MS = 10_000;
 const MAX_FAILURES = 5;
@@ -28,6 +28,7 @@ export function mountPairPage(doc, {
   clearDeadline = (t) => doc.defaultView.clearTimeout(t),
   setRequestTimer = (fn, ms) => doc.defaultView.setTimeout(fn, ms),
   clearRequestTimer = (t) => doc.defaultView.clearTimeout(t),
+  loadBrowserDevice = () => import('./console/browser-device.js'),
 } = {}) {
   const root = doc.getElementById('pair-root') || doc.body;
   const make = (tag, opts = {}, parent) => {
@@ -52,9 +53,9 @@ export function mountPairPage(doc, {
 
   root.replaceChildren();
   const head = make('header', { cls: 'pair-head' }, root);
-  make('h1', { text: 'Pair a phone with this agent' }, head);
+  make('h1', { text: 'Devices' }, head);
   make('p', { cls: 'pair-host', text: loc.host, attrs: { 'aria-label': 'This page’s address' } }, head);
-  make('p', { cls: 'pair-hint', text: 'Only type your PIN here if this is your agent’s usual address.' }, head);
+  const pinHint = make('p', { cls: 'pair-hint', text: 'Only type your PIN here if this is your agent’s usual address.' }, head);
   const body = make('main', { cls: 'pair-body' }, root);
   const status = make('p', { cls: 'pair-status', attrs: { role: 'status', 'aria-live': 'polite' } }, root);
   const foot = make('p', { cls: 'pair-foot' }, root);
@@ -80,7 +81,7 @@ export function mountPairPage(doc, {
   // session (403), at the session deadline (even while hidden or not polling), and on return to a
   // page whose session ran out meanwhile.
   function forget(message) {
-    auth = null; stopPolling(); failures = 0; again = false;
+    auth = null; pinHint.hidden = false; stopPolling(); failures = 0; again = false;
     gen++; busy = false; pairedBusy = false; // a refresh still unwinding from the old session can no longer hold the page
     for (const e of [...inflight]) e.abort();
     inflight.clear();
@@ -115,7 +116,7 @@ export function mountPairPage(doc, {
     const form = make('form', { cls: 'pair-pin' }, body);
     make('label', { text: 'Dashboard PIN', attrs: { for: 'pair-pin-input' } }, form);
     const input = make('input', { attrs: { id: 'pair-pin-input', type: 'password', inputmode: 'numeric', autocomplete: 'off', maxlength: '12' } }, form);
-    const go = make('button', { cls: 'pair-button', text: 'Show the code', type: 'submit' }, form);
+    const go = make('button', { cls: 'pair-button', text: wanted ? 'Show the code' : 'Unlock Devices', type: 'submit' }, form);
     const err = make('p', { cls: 'pair-error', text: message || '', attrs: { role: 'alert' } }, form);
     form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
@@ -178,16 +179,57 @@ export function mountPairPage(doc, {
   }
   const gone = (e) => e instanceof SessionGone || !auth;
 
-  // ── Layout: the waiting phones first, the paired phones below, filled independently ────────
+  // ── Layout: paired devices and waiting approvals load independently ────────
   const waitingBox = doc.createElement('section'); waitingBox.setAttribute('aria-label', 'Phones waiting to pair');
   const pairedBox = doc.createElement('section'); pairedBox.className = 'pair-paired'; pairedBox.setAttribute('aria-label', 'Paired devices');
+  const linkBox = make('section', { attrs: { 'aria-label': 'Link this computer' } });
   let lastData = null;
+
+  function renderLink() {
+    linkBox.replaceChildren();
+    const link = make('button', { cls: 'pair-button', text: 'Link this computer', type: 'button' }, linkBox);
+    const feedback = make('p', { cls: 'pair-device-detail', attrs: { role: 'status' } }, linkBox);
+    link.addEventListener('click', async () => {
+      const mine = auth;
+      const current = () => auth === mine && mine && now() < mine.expiresAt;
+      if (!current()) { if (mine) forget(EXPIRED); return; }
+      link.disabled = true;
+      feedback.textContent = 'Starting the link…';
+      try {
+        const { createBrowserDevice } = await loadBrowserDevice();
+        if (!current()) return;
+        const device = createBrowserDevice({
+          bearer: () => current() ? mine.token : '',
+          fetchFn: (url, options) => current() ? fetchFn(url, options) : Promise.reject(new SessionGone()),
+        });
+        const result = await device.setup({ askSession: () => current() ? mine.session : null });
+        if (!current()) return;
+        if (result.ok) {
+          feedback.textContent = result.answer.status === 'active'
+            ? 'This browser is linked for Conversations.'
+            : 'Approve the request on your phone or in Telegram to finish linking this browser for Conversations.';
+          void refreshPaired();
+        } else {
+          feedback.textContent = result.error === 'browser-devices-off'
+            ? 'Browser linking for Conversations is turned off on this agent.'
+            : 'Could not link this browser. Try again.';
+        }
+      } catch {
+        if (current()) feedback.textContent = 'Could not link this browser. Try again.';
+      } finally {
+        if (current()) link.disabled = false;
+      }
+    });
+  }
   function ensureLayout() {
     if (body.contains(waitingBox)) return;
     waitingBox.replaceChildren(); pairedBox.replaceChildren();
-    make('h2', { text: 'Paired phones' }, pairedBox);
-    make('p', { text: 'Reading the paired phones…' }, pairedBox);
-    body.replaceChildren(waitingBox, pairedBox);
+    make('h2', { text: 'Paired devices' }, pairedBox);
+    make('p', { text: 'Reading paired devices…' }, pairedBox);
+    pinHint.hidden = true;
+    renderLink();
+    if (wanted) body.replaceChildren(waitingBox, pairedBox, linkBox);
+    else body.replaceChildren(linkBox, pairedBox, waitingBox);
   }
 
   async function refresh() {
@@ -203,7 +245,7 @@ export function mountPairPage(doc, {
       const data = a.data;
       failures = 0; status.textContent = '';
       lastData = data;
-      renderWaiting(data); // the code shows now; the paired-phones read runs on its own
+      renderWaiting(data); // the code shows now; the paired-device read runs on its own
       void refreshPaired();
     } catch (e) {
       if (gone(e)) return;
@@ -228,7 +270,7 @@ export function mountPairPage(doc, {
     }
   }
 
-  // The paired-phones list: its own read, never holding up the codes above it.
+  // The paired-device read runs independently of pairing approvals.
   let pairedBusy = false;
   async function refreshPaired() {
     if (!auth || pairedBusy) return;
@@ -239,11 +281,11 @@ export function mountPairPage(doc, {
       const list = d.ok && d.data && Array.isArray(d.data.devices) ? d.data.devices : null;
       // Browser rows say when browsers are switched off on this agent (§4.9).
       let browserOff = false;
-      if (list && list.some((x) => x && x.client === 'browser')) {
+      if (list && list.some((x) => x && x.client === 'browser' && x.linkedForDocuments !== true)) {
         try { const s = await request('/mobile/browser-devices/status'); browserOff = s.status === 503; } catch { browserOff = false; }
       }
-      renderPaired(list, { browserOff });
-    } catch (e) { if (!gone(e)) renderPaired(null); }
+      if (gen === myGen) renderPaired(list, { browserOff });
+    } catch (e) { if (gen === myGen && !gone(e)) renderPaired(null); }
     finally { if (gen === myGen) pairedBusy = false; }
   }
 
@@ -270,7 +312,8 @@ export function mountPairPage(doc, {
     const approvals = Array.isArray(data && data.approvals) ? data.approvals : [];
     const { list, missing } = shownApprovals(approvals.filter((x) => x && !declined.has(x.deviceId)), wanted);
     waitingBox.replaceChildren();
-    make('h2', { text: waitingHeadline({ approval: data && data.approval, shown: list, missing }) }, waitingBox);
+    make('h2', { text: 'Pair a phone' }, waitingBox);
+    make('p', { text: waitingHeadline({ approval: data && data.approval, shown: list, missing }) }, waitingBox);
     if (missing && approvals.length) {
       // Same page, same unlock: drop the fragment in place instead of reloading (a reload would ask for the PIN again).
       const all = make('button', { cls: 'pair-link-button', text: 'Show every waiting phone', type: 'button' }, waitingBox);
@@ -325,14 +368,11 @@ export function mountPairPage(doc, {
   function renderPaired(devices, opts = {}) {
     ensureLayout();
     pairedBox.replaceChildren();
-    make('h2', { text: 'Paired phones' }, pairedBox);
-    if (devices === null) { make('p', { text: 'Could not read the paired phones.' }, pairedBox); return; }
-    const { phones, browsers } = pairedGroups(devices, opts);
-    if (!phones.length) make('p', { text: 'No phones are paired with this machine.' }, pairedBox);
-    for (const r of phones) deviceRow(r);
-    if (!browsers.length) return;
-    make('h2', { text: 'Paired browsers' }, pairedBox);
-    for (const r of browsers) deviceRow(r);
+    make('h2', { text: 'Paired devices' }, pairedBox);
+    if (devices === null) { make('p', { text: 'Could not read paired devices.' }, pairedBox); return; }
+    const rows = pairedDeviceRows(devices, opts);
+    if (!rows.length) make('p', { text: 'No devices are paired with this agent.' }, pairedBox);
+    for (const r of rows) deviceRow(r);
   }
 
   /** One device: its name, one short detail line, and a Remove button that never wraps. */
@@ -340,7 +380,7 @@ export function mountPairPage(doc, {
     const row = make('div', { cls: 'pair-device-row' }, pairedBox);
     const words = make('div', { cls: 'pair-device-words' }, row);
     make('span', { cls: 'pair-device-name', text: r.name }, words);
-    make('span', { cls: 'pair-device-detail', text: r.detail }, words);
+    make('span', { cls: 'pair-device-detail', text: `${r.what[0].toUpperCase()}${r.what.slice(1)} · ${r.detail}` }, words);
     if (!r.removable) return;
     const remove = make('button', { cls: 'pair-remove', text: 'Remove', type: 'button', attrs: { 'aria-label': `Remove ${r.name}` } }, row);
     remove.addEventListener('click', () => {

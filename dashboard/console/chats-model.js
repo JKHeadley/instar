@@ -567,7 +567,7 @@ export function setupRefusal(status, data) {
     'setup-ended': 'This setup ended. Start it again.',
     'browser-setup-waiting': 'Another browser is already waiting for approval. Approve or decline it first.',
     'browser-setups-paused': 'A browser setup was declined in the last hour, so new browser setups are paused for now.',
-    'too-many-browsers': 'This machine already has the most browsers it allows. Remove one in People > Phones first.',
+    'too-many-browsers': 'This machine already has the most browsers it allows. Remove one in People > Devices first.',
     'too-many-setups': 'Too many browsers were set up in the last hour.',
     'replaces-invalid': 'The earlier key of this browser could not be checked.',
     'approval-unavailable': d.detail || 'Set up this browser from the machine serving Telegram.',

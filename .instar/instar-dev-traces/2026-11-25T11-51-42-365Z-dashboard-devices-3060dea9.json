@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "dashboard-devices",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T11:51:42.365Z",
+  "artifactPath": "upgrades/side-effects/dashboard-devices.md",
+  "artifactSha256": "c6856d86466c194d4e0b06feeb81430d7e28790e2c06a406668bea157feab988",
+  "coveredFiles": [
+    "dashboard-pair/pair-model.js",
+    "dashboard-pair/pair.css",
+    "dashboard-pair/pair.html",
+    "dashboard-pair/pair.js",
+    "dashboard/console/chats-model.js",
+    "dashboard/console/nav-model.js",
+    "dashboard/index.html",
+    "dashboard/phones.js",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-pairing-alive.test.ts",
+    "tests/integration/mobile-pairing-routes.test.ts",
+    "tests/unit/dashboard-pair-page.test.ts",
+    "tests/unit/dashboard-phones-browser.test.ts",
+    "upgrades/next/dashboard-devices.md",
+    "upgrades/side-effects/dashboard-devices.eli16.md",
+    "upgrades/side-effects/dashboard-devices.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible presentation and additive display metadata; existing enrollment, consent, and route authorization.",
+  "eli16Path": "upgrades/side-effects/dashboard-devices.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-devices.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
