@@ -53,3 +53,7 @@ Artifact second-pass: boundary reviewer confirmed scope and limits; wording was 
 ## Update 2026-11-27 (after merging the updated inspector and main)
 
 The command change now lives in `src/commands/designInspect.ts`, the name the inspector gave its command file so it matches the command people type; git carried it there in the merge. The git fixture (`tests/fixtures/designPolicyGitRepo.ts`) commits only DF-0001, so it now commits the live standard and rule-id lock trimmed to DF-0001's rules (`tests/fixtures/designStandardForEntries.ts`); before that, main's newer entries made the feedback cases fail with `earned-entry-missing`. Checked directly on the merged tree: the fixture's plain inspection stays structurally valid with no findings, and the feedback path returns no errors. On the real repository, `--feedback` reports DF-0002, DF-0003 and DF-0004 until they are migrated to the canonical entry format; the Chief of Staff chose that interim on 2026-11-27 (each now has a tracked commitment for its card) rather than exempting them. The verification counts above are from before the merge and are re-run with the stack's test turn.
+
+## Second-pass review
+
+**Reviewer:** a fresh, independent Claude Opus 5.5 second-pass reviewer, not the author, started by the Design Standards session on 2026-11-27 (rule 7 pre-queue review, 12:22 to 12:24 PT); final verdict concur, with any wording findings fixed in this head.

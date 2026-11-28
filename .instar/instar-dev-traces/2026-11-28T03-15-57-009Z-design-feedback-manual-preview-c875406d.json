@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "design-feedback-manual-preview",
+  "sessionId": "e7d3ee73-b4ae-43b6-9d89-bbc229ef91ad",
+  "timestamp": "2026-11-28T03:15:57.009Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-manual-preview.md",
+  "artifactSha256": "f4c1ce87b687984432fc37e750059ce281b504dfa393b3c0c7ee1e8c21c5daa8",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-23T16-11-37-215Z-design-feedback-manual-preview.json",
+    "docs/design/manual-inspection.md",
+    "src/cli.ts",
+    "src/commands/designInspect.ts",
+    "src/data/awareness/manual-design-policy-inspection.md",
+    "src/designGate/feedbackHistory.ts",
+    "src/designGate/gitInspection.ts",
+    "tests/e2e/design-policy-cli-lifecycle.test.ts",
+    "tests/fixtures/designPolicyGitRepo.ts",
+    "tests/fixtures/designStandardForEntries.ts",
+    "tests/integration/design-policy-git-inspection.test.ts",
+    "upgrades/next/design-feedback-manual-preview.md",
+    "upgrades/side-effects/design-feedback-manual-preview.md",
+    "upgrades/side-effects/design-feedback-manual-preview.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Whole-PR trace after merging the updated parent; second pass concurred; whole files green on the stack head.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
