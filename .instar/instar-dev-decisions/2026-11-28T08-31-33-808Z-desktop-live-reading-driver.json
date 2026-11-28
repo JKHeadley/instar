@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-28T08:31:33.808Z",
+  "slug": "desktop-live-reading-driver",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 107,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/desktop-live-reading.mjs"
+    ],
+    "addedLines": 76,
+    "deletedLines": 31
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot operator-run measurement that ends with Stop; not a self-triggered loop"
+  },
+  "verdict": "pass"
+}

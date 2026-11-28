@@ -27,7 +27,14 @@ An `agreed` field in an uncommitted draft is gone: the session-request reply car
 
 ## Second-pass review
 
-**Reviewer:** not reviewed. It is a standalone operator script with no importer; it goes through review before it is published.
+**Reviewer:** an independent second-pass subagent (Claude, fresh context, given the whole script at b15977243 and the page it drives, not the author's conclusion) read it on 2026-11-28 00:23 PT. Verdict at first: do not concur, for two real defects, both fixed in this commit and listed below. On the fixed working tree the same reviewer re-read the whole script and concurred, with no blocking defect. The PIN path and view-only were checked and found sound.
+
+The first version of this script went out unreviewed, as this section used to say.
+
+Fixed after the 2026-11-28 review:
+- Stop and cleanup were skipped on SIGINT, SIGTERM, a hung Chrome or a crashed Chrome. Now one cleanup runs on every exit: signal handlers call it, every browser call has a 60 s deadline, pending calls fail when the socket closes, and the Stop click in cleanup waits at most 5 s, then 1.5 s for the revoke.
+- The output carried free text: the machine name, raw status lines, decoder error messages, the server's downgrade word unfiltered, and page text on the error paths. The machine name is gone; status lines map to a fixed word list; decoder errors keep only the error name; server words pass only when they are short lowercase words, otherwise "other"; error paths print fixed words only.
+- Nits taken: Chrome runs in its own process group, so Ctrl-C reaches only the script, which then presses Stop; the startup page lookup and browser connection have deadlines; a failed Stop exits with code 2; a missing Chrome no longer throws an unhandled error; unused flags removed; the header no longer claims a drop count. Not changed: the scroll delay is the time to the next picture of any kind, so it is read next to the idle rate, which the output prints; the burst window runs about 3.5 s and the printed seconds say so; the idle count starts right after the first picture, so start-up pictures can raise it a little; a Stop call that itself times out is not retried, and the run exits with code 2.
 
 Follow-up (2026-11-27 18:34 PT): **Reviewer:** an independent second-pass reviewer concurred with the decoder-count follow-up. Its nits were all taken: a guard for a missing `VideoDecoder.isConfigSupported`, a guard so a missing `window.__video` cannot lose the reading, and the doc's `agreed` and `videoCodec` wording.
 

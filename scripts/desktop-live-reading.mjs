@@ -1,8 +1,9 @@
 /** Live Remote Desktop reading (CMT-033). Reads the dashboard PIN from stdin, opens the
  * named machine, times the first picture, measures delay from single scroll steps to the
- * next picture and the picture rate during a scroll burst, prints only numbers, and
- * always presses Stop. Scroll steps alternate down and up so the page ends where it began.
- * --view-only skips every input and measures only first picture, idle rate and drops. */
+ * next picture and the picture rate during a scroll burst, prints only numbers and fixed
+ * words, and presses Stop on every exit it can see (an error, a hang, Ctrl-C or SIGTERM).
+ * Scroll steps alternate down and up so the page ends where it began.
+ * --view-only skips every input and measures only first picture and idle rate. */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,9 +15,6 @@ const url = process.argv[2];
 const landscape = process.argv.includes('--landscape');
 const mobile = process.argv.includes('--mobile') || landscape;
 const viewOnly = process.argv.includes('--view-only');
-const wheel = false;
-const cursorCheck = process.argv.includes('--cursor');
-const anyGeometry = process.argv.includes('--any-geometry');
 if (!url || !url.startsWith('https://')) throw new Error('HTTPS desktop URL required');
 const pin = await new Promise(resolve => {
   let value = '';
@@ -27,12 +25,31 @@ if (!/^\d{6}$/.test(pin)) throw new Error('six-digit PIN required on stdin');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-desktop-browser-'));
 const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const chrome = spawn(chromePath, ['--headless=new', '--no-first-run',
-  '--no-default-browser-check', '--disable-background-networking',
-  '--remote-debugging-port=0', `--user-data-dir=${profile}`, url], { stdio: 'ignore' });
+// Status lines and server words become one of these fixed words, so the printed
+// reading never carries a machine name, an account or a server message.
+const statusWord = s => {
+  const v = String(s ?? '');
+  for (const [word, re] of [['stopped', /stopped/i], ['compatibility-mode', /compatibility mode/i],
+    ['live', /\blive\b/i], ['reconnecting', /reconnect/i], ['check-failed', /could not check/i],
+    ['refused', /refused|not accepted|incorrect pin/i], ['unavailable', /unavailable|is off/i],
+    ['timed-out', /timed out/i], ['error', /error|failed/i], ['connecting', /connect|request|wait|start/i]]) {
+    if (re.test(v)) return word;
+  }
+  return v.trim() ? 'other' : 'empty';
+};
+const fixedWord = v => (typeof v === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(v) ? v : v == null ? null : 'other');
+const CALL_TIMEOUT_MS = 60_000;
+let cleaned = null;
 let socket;
 let evaluate;
 let stopAttempted = false;
+const chrome = spawn(chromePath, ['--headless=new', '--no-first-run',
+  '--no-default-browser-check', '--disable-background-networking',
+  '--remote-debugging-port=0', `--user-data-dir=${profile}`, url], { stdio: 'ignore', detached: true }); // its own process group: Ctrl-C reaches only this script, which then presses Stop
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.once(signal, () => { cleanup().finally(() => process.exit(code)); });
+}
+chrome.on('error', () => { /* a missing Chrome shows as "Chrome did not start" below */ });
 try {
   const portFile = path.join(profile, 'DevToolsActivePort');
   for (let i = 0; i < 100 && !fs.existsSync(portFile); i++) await sleep(100);
@@ -45,7 +62,7 @@ try {
   if (!port) throw new Error('Chrome DevTools port was unavailable');
   let page;
   for (let i = 0; i < 100 && !page; i++) {
-    const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+    const targets = await (await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(5_000) })).json();
     page = targets.find(target => target.type === 'page' && target.url.startsWith(url));
     if (!page) await sleep(100);
   }
@@ -54,20 +71,33 @@ try {
   await new Promise((resolve, reject) => {
     socket.once('open', resolve);
     socket.once('error', reject);
+    setTimeout(() => reject(new Error('browser connection did not open')), 10_000);
   });
   let serial = 0;
   const pending = new Map();
+  socket.on('close', () => {
+    for (const settle of pending.values()) settle({ error: { message: 'browser connection closed' } });
+    pending.clear();
+  });
   socket.on('message', raw => {
     const message = JSON.parse(raw.toString());
     if (!pending.has(message.id)) return;
     pending.get(message.id)(message);
     pending.delete(message.id);
   });
+  // Every browser call has a deadline, so a hung or crashed Chrome ends in the cleanup below.
   const call = (method, params = {}) => new Promise(resolve => {
     const id = ++serial;
-    pending.set(id, resolve);
-    socket.send(JSON.stringify({ id, method, params }));
+    const timer = setTimeout(() => { pending.delete(id); resolve({ error: { message: `browser call timed out: ${method}` } }); }, CALL_TIMEOUT_MS);
+    pending.set(id, message => { clearTimeout(timer); resolve(message); });
+    try { socket.send(JSON.stringify({ id, method, params })); }
+    catch { clearTimeout(timer); pending.delete(id); resolve({ error: { message: 'browser connection closed' } }); }
   });
+  const callOk = async (method, params) => {
+    const response = await call(method, params);
+    if (response.error) throw new Error(response.error.message || `browser call failed: ${method}`);
+    return response;
+  };
   evaluate = async expression => {
     const response = await call('Runtime.evaluate', {
       expression, awaitPromise: true, returnByValue: true,
@@ -102,7 +132,7 @@ try {
       window.VideoDecoder = class extends Native {
         constructor(init) {
           super({ output: frame => { d.outputs++; init.output(frame); },
-            error: e => { if (d.errors.length < 5) d.errors.push(String(e?.name || '') + ': ' + String(e?.message || e).slice(0, 120)); init.error(e); } });
+            error: e => { if (d.errors.length < 5) d.errors.push(String(e?.name || 'Error')); init.error(e); } });
           d.created++;
         }
         configure(config) { d.configured++; return super.configure(config); }
@@ -166,7 +196,7 @@ try {
     if (!ready) await sleep(100);
   }
   if (!ready) {
-    const probe = await evaluate("({state:document.readyState, title:document.title, hasButton:!!document.getElementById('unlockButton'), url:location.pathname, body:document.body?.textContent.slice(0,100)})");
+    const probe = await evaluate("({state:document.readyState, hasButton:!!document.getElementById('unlockButton'), viewerPage:location.pathname === '/dashboard/desktop.html'})");
     throw new Error(`desktop page did not finish loading: ${JSON.stringify(probe)}`);
   }
   const opened = await evaluate(`(async () => {
@@ -186,8 +216,7 @@ try {
         || (canvas && !canvas.hidden && canvas.width))) {
         return { width: canvas && !canvas.hidden ? canvas.width : image.naturalWidth,
           height: canvas && !canvas.hidden ? canvas.height : image.naturalHeight,
-          codec: canvas && !canvas.hidden ? 'h264' : 'jpeg',
-          machine: document.getElementById('machineName')?.textContent || '', status };
+          codec: canvas && !canvas.hidden ? 'h264' : 'jpeg', status };
       }
       if (/unavailable|refused|not accepted|error/i.test(status)) return { error: status };
       await sleep(100);
@@ -195,7 +224,7 @@ try {
     return { error: 'first frame timed out', status: document.getElementById('status')?.textContent };
   })()`);
 
-  if (opened?.error) throw new Error(`desktop open failed: ${opened.error} (status: ${JSON.stringify(opened.status ?? null)})`);
+  if (opened?.error) throw new Error(`desktop open failed: ${statusWord(opened.error)} (status: ${statusWord(opened.status ?? opened.error)})`);
   // The status line is watched from page load (see the injected script), so a start-up fallback is kept.
   const firstPictureMs = await evaluate(`(window.__unlockAt !== null && window.__pics.length) ? Math.round(window.__pics[0] - window.__unlockAt) : null`);
   const pct = (v, f) => { if (!v.length) return null; const s = [...v].sort((a, b) => a - b); return Math.round(s[Math.max(0, Math.ceil(f * s.length) - 1)]); };
@@ -209,7 +238,7 @@ try {
       window.__wheelAt = []; document.addEventListener('wheel', e => window.__wheelAt.push(e.timeStamp), true);
       return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
     for (let i = 0; i < 20; i++) {
-      await call('Input.dispatchMouseEvent', { type: 'mouseWheel', x: center.x, y: center.y, deltaX: 0,
+      await callOk('Input.dispatchMouseEvent', { type: 'mouseWheel', x: center.x, y: center.y, deltaX: 0,
         deltaY: i % 2 ? -120 : 120, pointerType: 'mouse' });
       await sleep(1_500);
       const r = await evaluate(`(() => { const t = window.__wheelAt.at(-1); const p = window.__pics.find(x => x > t);
@@ -219,7 +248,7 @@ try {
     // Smoothness: 3 s of continuous scrolling, 30 steps down then 30 up, one every 50 ms.
     const b0 = await evaluate('performance.now()');
     for (let i = 0; i < 60; i++) {
-      await call('Input.dispatchMouseEvent', { type: 'mouseWheel', x: center.x, y: center.y, deltaX: 0,
+      await callOk('Input.dispatchMouseEvent', { type: 'mouseWheel', x: center.x, y: center.y, deltaX: 0,
         deltaY: i < 30 ? 40 : -40, pointerType: 'mouse' });
       await sleep(50);
     }
@@ -235,27 +264,43 @@ try {
   // (its video format and, where the server records it, why it left H.264), read before Stop.
   // The server sets videoCodec only at request or resume: a viewer fallback mid-session still reads h264 there.
   const video = (await evaluate('window.__video')) || { missing: true };
+  if (Array.isArray(video.decoder?.errors)) video.decoder.errors = video.decoder.errors.map(e => (/^[A-Za-z]{1,40}$/.test(e) ? e : 'Error'));
   video.server = await evaluate(`(async () => { try {
     const r = await fetch('/desktop/requests/' + encodeURIComponent(window.__desktopSmokeRequestId), { cache: 'no-store', credentials: 'same-origin', headers: window.__desktopHeaders || {} });
     const v = await r.json(); return { httpStatus: r.status, videoCodec: v.videoCodec ?? null, videoDowngrade: v.videoDowngrade ?? null };
-  } catch (e) { return { error: String(e && e.message || e).slice(0, 120) }; } })()`);
+  } catch (e) { return { error: 'read-failed' }; } })()`);
+  video.requested = fixedWord(video.requested);
+  video.server.videoCodec = fixedWord(video.server.videoCodec);
+  video.server.videoDowngrade = fixedWord(video.server.videoDowngrade);
   stopAttempted = true;
   const stopped = await evaluate(`(async () => { document.getElementById('stopButton')?.click();
     for (let i = 0; i < 100; i++) { const s = document.getElementById('status')?.textContent || '';
       if (/stopped/i.test(s)) return s; await new Promise(r => setTimeout(r, 100)); }
     return document.getElementById('status')?.textContent; })()`);
-  console.log(JSON.stringify({ machine: opened.machine, geometry: `${opened.width}x${opened.height}`, codec: opened.codec, video,
+  console.log(JSON.stringify({ geometry: `${opened.width}x${opened.height}`, codec: opened.codec, video,
     viewOnly, firstPictureMsFromPin: firstPictureMs, idlePicturesPerSecond: Math.round(idleCount / 10 * 10) / 10,
     delay: viewOnly ? null : { samples: delays.length, unanswered, typicalMs: pct(delays, 0.5), worstMs: pct(delays, 0.95) },
-    burst, statusChanges: statuses, stopped: /stopped/i.test(stopped || '') }, null, 1));
+    burst, statusChanges: (statuses || []).map(statusWord), stopped: /stopped/i.test(stopped || '') }, null, 1));
+  if (!/stopped/i.test(stopped || '')) process.exitCode = 2;
 } finally {
-  if (evaluate && !stopAttempted) {
-    try { await evaluate("document.getElementById('stopButton')?.click(); true"); await sleep(300); }
-    catch { /* Closing the browser also ends its socket. */ }
-  }
-  try { socket?.close(); } catch { /* browser may already be gone */ }
-  chrome.kill('SIGTERM');
-  await sleep(300);
-  SafeFsExecutor.safeRmSync(profile, { recursive: true, force: true,
-    operation: 'desktop-live-reading:temporary-browser-profile-cleanup' });
+  await cleanup();
+}
+
+/** Press Stop if the run did not get that far, then close Chrome and remove its profile. Runs once. */
+function cleanup() {
+  cleaned ??= (async () => {
+    if (evaluate && !stopAttempted) {
+      try {
+        await Promise.race([evaluate("document.getElementById('stopButton')?.click(); true"), sleep(5_000)]);
+        await sleep(1_500);
+      }
+      catch { /* Closing the browser also ends its socket; the server's lease limit ends the session. */ }
+    }
+    try { socket?.close(); } catch { /* browser may already be gone */ }
+    chrome.kill('SIGTERM');
+    await sleep(300);
+    SafeFsExecutor.safeRmSync(profile, { recursive: true, force: true,
+      operation: 'desktop-live-reading:temporary-browser-profile-cleanup' });
+  })();
+  return cleaned;
 }
