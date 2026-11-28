@@ -1,0 +1,3 @@
+# Replay Preparation Release Note Impact
+
+Tier 1, documentation only. This commit supplies the missing release-note fragment for the already committed internal replay script. No runtime code, defaults, installed agent text, authority, external operation or state schema changes. Reverting this note removes it without migration. The unfinished validator and its safe test cleanup remain uncommitted on a separate branch; they are not publication content in this commit. The release note distinguishes focused evidence from full verification and preparation from model trials or activation. Ordinary installed hooks and a fresh trace are required for this exact documentation change.

@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "reviewKind": "source-authority-and-ambiguity-review-not-answer-production",
+  "privateReviewPath": ".instar/state/context-budget-next/source-bound-holdout-v1/independent-authority-review.json",
+  "privateReviewSha256": "fb7f69a203ad6cda434fd70c9594059026589d511562d2284e19570f89c7bb7f",
+  "reviewer": {
+    "session": "/root/source_authority_review",
+    "separation": "Structurally separate child session; same model family as parent, not cross-model independent. No additional model or network calls.",
+    "qualification": "This review is not model qualification and does not satisfy a two-model-family judge requirement."
+  },
+  "exposure": [
+    {
+      "actor": "/root/source_authority_review",
+      "firstAccessAt": "2026-11-23T22:42:46.007802+00:00",
+      "saw": [
+        "sources",
+        "questions",
+        "labels",
+        "manifest"
+      ],
+      "method": "Read supplied four JSON files; initial combined display truncated, followed by complete question/rubric projection. Full source messages were visible.",
+      "role": "authority-and-ambiguity-reviewer-only",
+      "restrictions": "Do not reuse this exposed session as a blinded answer producer or reducer; no reduction created or tuned."
+    }
+  ],
+  "inputHashes": {
+    "sources.json": "8eeed15a40ec520a4c671d803476c4dd7d33003eb2ffe7017f26f1e970e39f4b",
+    "questions.json": "e362ebcf4b53cf7a361bf94ba5e811f6513091c49de782da2a99e517337a1f35",
+    "labels.json": "6c52163bd89b70c2d5093ea4ef528f5c890d2ef0ade1ffb9711e829ea785d2da",
+    "manifest.json": "64207a953443931dcfad273e3e93502bf8c4f9afb8c7c2437bff78eb4010276a"
+  },
+  "dispositionCounts": {
+    "retain": 3,
+    "retain-with-caveat": 4,
+    "revise-before-trials": 1
+  },
+  "caseDispositions": [
+    {
+      "caseId": "h01",
+      "disposition": "revise-before-trials"
+    },
+    {
+      "caseId": "h02",
+      "disposition": "retain-with-caveat"
+    },
+    {
+      "caseId": "h03",
+      "disposition": "retain-with-caveat"
+    },
+    {
+      "caseId": "h04",
+      "disposition": "retain"
+    },
+    {
+      "caseId": "h05",
+      "disposition": "retain"
+    },
+    {
+      "caseId": "h06",
+      "disposition": "retain-with-caveat"
+    },
+    {
+      "caseId": "h07",
+      "disposition": "retain-with-caveat"
+    },
+    {
+      "caseId": "h08",
+      "disposition": "retain"
+    }
+  ],
+  "qualificationEligible": false,
+  "trials": 0,
+  "originalsPreserved": true,
+  "nextGate": "Create a separately versioned correction and adjudicate caveats before trials; preserve original pack and reviewer disagreement."
+}
