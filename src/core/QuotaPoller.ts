@@ -830,6 +830,27 @@ export class QuotaPoller {
   /** Reads the history ledger could not take (record() threw). */
   historyFailures(): number { return this.historyRecordFailures; }
 
+  /**
+   * After a refused refresh exchange: read the slot once more. Returns the stored token and its
+   * usage answer when the slot now holds a DIFFERENT token that the usage read does not refuse
+   * (another writer, normally Claude Code, renewed the login); `'network'` when that read got no
+   * answer; null otherwise (same token, unreadable slot, or the new token is refused too).
+   * Read-only: never refreshes and never writes the credential store.
+   */
+  private async readRenewedByOtherWriter(
+    account: SubscriptionAccount,
+    previousToken: string,
+  ): Promise<{ token: string; body: Record<string, unknown> | null } | 'network' | null> {
+    let stored: TokenResolution;
+    try { stored = await this.tokenResolver(account); }
+    catch { return null; } // @silent-fallback-ok: unreadable keeps today's needs-reauth decision
+    if (typeof stored !== 'string' || stored.length === 0 || stored === previousToken) return null;
+    const read = await this.readUsage(stored);
+    if (read === null) return 'network';
+    if (read.authFailed) return null;
+    return { token: stored, body: read.body };
+  }
+
   /** The read itself, returning a typed result (see {@link PollAccountResult}). */
   private async pollAccountInner(
     account: SubscriptionAccount,
@@ -1000,6 +1021,8 @@ export class QuotaPoller {
     }
 
     let body: Record<string, unknown> | null;
+    // The token whose answer became `body` (the renewed one when Claude Code renewed the login).
+    let bodyToken = token;
     if (read.authFailed) {
       const refreshed = await this.refresher(slotAccount);
       if (!refreshed.ok) {
@@ -1013,45 +1036,67 @@ export class QuotaPoller {
           this.loginChecks.set(slotAccount.id, 'unavailable');
           return { kind: 'failed', attributedId: slotAccount.id, reason: 'credential-busy' };
         }
-        // No refresh token, or the exchange was rejected — genuine re-auth.
-        const causeClass: SubscriptionLoginCauseClass = refreshed.reason === 'read-failed'
-          ? 'refresh-read-failed'
-          : refreshed.reason === 'unsupported-account'
-            ? 'unrecognized-reason'
-            : refreshed.reason;
-        this.markNeedsReauth(slotAccount, causeClass);
-        this.observe(slotAccount.id, {
-          kind: 'transition-to-needs-reauth',
-          causeClass,
-          corroboration: 'exchange-corroborated',
-        });
-        return { kind: 'failed', attributedId: slotAccount.id, reason: 'needs-reauth' };
+        // A rejected exchange is not yet proof the login is dead: Claude Code itself may have
+        // refreshed this slot between our usage read and our exchange (the provider then refuses
+        // the refresh token we sent, because it was already used). Read the slot once more; if it
+        // now holds a DIFFERENT access token that the usage read does not refuse, that is the
+        // official app's renewed login. Anything else keeps today's needs-reauth decision.
+        // Nothing is written to the credential store here.
+        const renewed = refreshed.reason === 'exchange-failed'
+          ? await this.readRenewedByOtherWriter(slotAccount, token)
+          : null;
+        if (renewed === 'network') {
+          this.loginChecks.set(slotAccount.id, 'unavailable');
+          return { kind: 'failed', attributedId: slotAccount.id, reason: 'network' };
+        }
+        if (!renewed) {
+          // No refresh token, or the exchange was rejected — genuine re-auth.
+          const causeClass: SubscriptionLoginCauseClass = refreshed.reason === 'read-failed'
+            ? 'refresh-read-failed'
+            : refreshed.reason === 'unsupported-account'
+              ? 'unrecognized-reason'
+              : refreshed.reason;
+          this.markNeedsReauth(slotAccount, causeClass);
+          this.observe(slotAccount.id, {
+            kind: 'transition-to-needs-reauth',
+            causeClass,
+            corroboration: 'exchange-corroborated',
+          });
+          return { kind: 'failed', attributedId: slotAccount.id, reason: 'needs-reauth' };
+        }
+        this.lastFingerprint.set(slotAccount.id, credentialFingerprint(renewed.token));
+        this.logger.log(
+          `[QuotaPoller] account ${account.id} refresh refused, but Claude Code had already renewed the stored login (no re-auth needed)`,
+        );
+        body = renewed.body;
+        bodyToken = renewed.token;
+      } else {
+        const retry = await this.readUsage(refreshed.accessToken);
+        if (retry === null) { // network blip on the retry → next cycle
+          this.loginChecks.set(slotAccount.id, 'unavailable');
+          return { kind: 'failed', attributedId: slotAccount.id, reason: 'network' };
+        }
+        if (retry.authFailed) {
+          // Fresh token still rejected — treat as genuinely failed.
+          this.markNeedsReauth(slotAccount, 'still-authfailed-after-refresh');
+          this.observe(slotAccount.id, {
+            kind: 'transition-to-needs-reauth',
+            causeClass: 'still-authfailed-after-refresh',
+            corroboration: 'exchange-corroborated',
+          });
+          return { kind: 'failed', attributedId: slotAccount.id, reason: 'needs-reauth' };
+        }
+        // Recovered silently — no operator action needed. Record for visibility.
+        try {
+          this.pool.update(account.id, { lastRefreshAt: new Date().toISOString() });
+        } catch {
+          // @silent-fallback-ok: visibility-only write
+        }
+        this.logger.log(
+          `[QuotaPoller] account ${account.id} access token refreshed silently (no re-auth needed)`,
+        );
+        body = retry.body;
       }
-      const retry = await this.readUsage(refreshed.accessToken);
-      if (retry === null) { // network blip on the retry → next cycle
-        this.loginChecks.set(slotAccount.id, 'unavailable');
-        return { kind: 'failed', attributedId: slotAccount.id, reason: 'network' };
-      }
-      if (retry.authFailed) {
-        // Fresh token still rejected — treat as genuinely failed.
-        this.markNeedsReauth(slotAccount, 'still-authfailed-after-refresh');
-        this.observe(slotAccount.id, {
-          kind: 'transition-to-needs-reauth',
-          causeClass: 'still-authfailed-after-refresh',
-          corroboration: 'exchange-corroborated',
-        });
-        return { kind: 'failed', attributedId: slotAccount.id, reason: 'needs-reauth' };
-      }
-      // Recovered silently — no operator action needed. Record for visibility.
-      try {
-        this.pool.update(account.id, { lastRefreshAt: new Date().toISOString() });
-      } catch {
-        // @silent-fallback-ok: visibility-only write
-      }
-      this.logger.log(
-        `[QuotaPoller] account ${account.id} access token refreshed silently (no re-auth needed)`,
-      );
-      body = retry.body;
     } else {
       body = read.body;
     }
@@ -1075,7 +1120,7 @@ export class QuotaPoller {
       this.cliLoginExpiredHolds.delete(slotAccount.id);
       this.logger.log(`[QuotaPoller] account ${slotAccount.id}: expired-login hold released (status was set ${slotAccount.status} outside the poller)`);
     }
-    if (this.cliLoginExpiredHoldActive(slotAccount.id, slotAccount.configHome, token)) {
+    if (this.cliLoginExpiredHoldActive(slotAccount.id, slotAccount.configHome, bodyToken)) {
       this.loginChecks.set(slotAccount.id, 'signed-out');
       // Spec stale-process-login-expired D3: the poll never waits on a probe. A cached `ok` for this
       // credential releases the hold now; otherwise one is started in the background and its landing

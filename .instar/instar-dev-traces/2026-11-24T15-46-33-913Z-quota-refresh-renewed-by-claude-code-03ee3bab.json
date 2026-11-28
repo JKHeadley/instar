@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "quota-refresh-renewed-by-claude-code",
+  "sessionId": "b44ebb06-bdc3-487d-b618-eaf8b50fd33b",
+  "timestamp": "2026-11-24T15:46:33.913Z",
+  "artifactPath": "upgrades/side-effects/quota-refresh-renewed-by-claude-code.md",
+  "artifactSha256": "8a2532f699d2299038d9d4a82d13a95baaa46533cf0fd6a3c00b06f19186cdd2",
+  "coveredFiles": [
+    "docs/specs/quota-refresh-renewed-by-claude-code.eli16.md",
+    "src/core/QuotaPoller.ts",
+    "tests/unit/quota-poller-renewed-by-official-app.test.ts",
+    "upgrades/next/quota-refresh-renewed-by-claude-code.md",
+    "upgrades/side-effects/quota-refresh-renewed-by-claude-code.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only narrowing of one needs-reauth transition in QuotaPoller; no credential write, no new provider call type, no new authority; a revert fully undoes it.",
+  "eli16Path": "docs/specs/quota-refresh-renewed-by-claude-code.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quota-refresh-renewed-by-claude-code.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
