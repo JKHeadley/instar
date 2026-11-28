@@ -1,0 +1,9 @@
+# Keep Simulated Provider Tests Out of the Live Host Ledger
+
+The host admission ledger limits how many provider processes can run at once. Several tests use a real admission wrapper around a harmless simulated provider, or read the wrapper through its real HTTP route. Those tests need the real admission logic, but they do not need to share bookkeeping with the operator’s running agents. A temporary project directory alone does not isolate that bookkeeping because the default ledger is resolved from the user’s home directory.
+
+This change gives three existing fixtures their own temporary home lookup before the process-wide admission singleton is initialized. Each fixture asserts the exact ledger path it owns. The route saturation test also checks that both of its reservations actually succeeded and that its private ledger contains exactly two holders. Previously it ignored those return values and treated other live processes as part of the test environment. The provider lifecycle keeps the real provider factory, pool adapter, server and admission wrapper. Its completion still comes from the harmless simulated pool primitive.
+
+Teardown stops owned server resources, resets process-local test singletons and restores only the scoped home lookup before deleting the owned temporary directory. The tests do not change the HOME environment, production capacities, rate-limit policy or actual host ledger. Native-provider smoke tests remain under ordinary real host admission; giving actual native work a private ledger would defeat the safety purpose of that admission.
+
+Independent review and focused tests must check the private path, admitted saturation reservations, real HTTP routes and fake-provider completion. Complete release verification stays with the coordinator. A revert restores the earlier test setup without migration, deployment or account repair. This small fixture group does not mean the broader test-isolation audit has finished.

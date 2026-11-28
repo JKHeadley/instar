@@ -50,9 +50,13 @@ import { buildIntelligenceProvider } from '../../src/core/intelligenceProviderFa
 import { CapabilityFlag } from '../../src/providers/capabilities.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { getHostSpawnSemaphore, _resetHostSpawnSemaphoreForTest } from '../../src/core/hostSpawnSemaphore.js';
+import { _resetSpawnPollersForTest } from '../../src/core/SpawnCapIntelligenceProvider.js';
+import { __resetLlmCircuitBreakerSingleton } from '../../src/core/LlmCircuitBreaker.js';
 
 describe('Provider-substrate live wiring E2E', () => {
   let tmpDir: string;
+  let homeSpy: { mockRestore(): void };
   let stateDir: string;
   let server: AgentServer;
   let app: ReturnType<AgentServer['getApp']>;
@@ -61,6 +65,12 @@ describe('Provider-substrate live wiring E2E', () => {
 
   beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-wiring-e2e-'));
+    homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpDir);
+    _resetHostSpawnSemaphoreForTest();
+    _resetSpawnPollersForTest();
+    __resetLlmCircuitBreakerSingleton();
+    expect(getHostSpawnSemaphore().status().holdersPath)
+      .toBe(path.join(tmpDir, '.instar', 'host-spawn-holders.json'));
     stateDir = path.join(tmpDir, '.instar');
     fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
     fs.mkdirSync(path.join(stateDir, 'state', 'jobs'), { recursive: true });
@@ -108,10 +118,17 @@ describe('Provider-substrate live wiring E2E', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-    await registry.unregister('anthropic-headless' as never);
-    await registry.unregister('anthropic-interactive-pool' as never);
-    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/provider-substrate-live-wiring.test.ts:cleanup' });
+    try {
+      await server?.stop();
+      await registry.unregister('anthropic-headless' as never);
+      await registry.unregister('anthropic-interactive-pool' as never);
+    } finally {
+      _resetHostSpawnSemaphoreForTest();
+      _resetSpawnPollersForTest();
+      __resetLlmCircuitBreakerSingleton();
+      homeSpy?.mockRestore();
+      SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/provider-substrate-live-wiring.test.ts:cleanup' });
+    }
   });
 
   const auth = () => ({ Authorization: `Bearer ${AUTH_TOKEN}` });

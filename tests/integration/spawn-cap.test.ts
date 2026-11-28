@@ -12,7 +12,7 @@
  * - the lint flags a fresh raw provider construction outside the funnel.
  */
 
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -57,16 +57,23 @@ function appWithRoutes(): express.Express {
 
 describe('Fork-bomb prevention (integration)', () => {
   let holdersPath: string;
+  let fixtureHome: string;
+  let homeSpy: { mockRestore(): void };
 
   beforeEach(() => {
+    fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-int-'));
+    homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(fixtureHome);
     _resetHostSpawnSemaphoreForTest();
     _resetSpawnPollersForTest();
-    holdersPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fb-int-')), 'holders.json');
+    holdersPath = path.join(fixtureHome, 'holders.json');
+    expect(getHostSpawnSemaphore().status().holdersPath)
+      .toBe(path.join(fixtureHome, '.instar', 'host-spawn-holders.json'));
   });
   afterEach(() => {
     _resetHostSpawnSemaphoreForTest();
     _resetSpawnPollersForTest();
-    try { SafeFsExecutor.safeRmSync(path.dirname(holdersPath), { recursive: true, force: true, operation: 'tests/integration/spawn-cap.test.ts:afterEach' }); } catch { /* ignore */ }
+    homeSpy?.mockRestore();
+    try { SafeFsExecutor.safeRmSync(fixtureHome, { recursive: true, force: true, operation: 'tests/integration/spawn-cap.test.ts:afterEach' }); } catch { /* ignore */ }
   });
 
   describe('GET /spawn-limiter', () => {
@@ -86,24 +93,16 @@ describe('Fork-bomb prevention (integration)', () => {
     it('reflects a saturated cap after slots are taken', async () => {
       configureHostSpawnSemaphore({ maxConcurrent: 2 });
       const sem = getHostSpawnSemaphore();
-      sem.acquire('a');
-      sem.acquire('b');
+      expect(sem.acquire('a')).toBe(true);
+      expect(sem.acquire('b')).toBe(true);
       const res = await request(appWithRoutes()).get('/spawn-limiter');
       expect(res.body.cap).toBe(2);
-      // The route intentionally reads the host-wide production holders file.
-      // Other test workers (or a live local agent) may add a holder between
-      // these acquires and the HTTP read, so saturation is the invariant; an
-      // exact host-wide count is not.
-      expect(res.body.liveHolders).toBeGreaterThanOrEqual(2);
+      expect(res.body.liveHolders).toBe(2);
       expect(res.body.available).toBe(0);
       expect(res.body.saturated).toBe(true);
     });
 
-    // NOTE: these assert route WIRING (the F5 fields surface with the right config +
-    // shape). Exact live counts are covered by hostSpawnSemaphore-priority.test.ts with
-    // isolated holders files — the /spawn-limiter route reads the DEFAULT host holders
-    // path, which carries real holders in a non-clean environment, so we don't assert
-    // exact counts here.
+    // The real route reads the default singleton, scoped to this fixture's home.
     it('F5: surfaces the interactive-priority config + per-lane count fields when enabled', async () => {
       configureHostSpawnSemaphore({ maxConcurrent: 8, interactivePriority: { enabled: true, ri: 2, rb: 1 } });
       const res = await request(appWithRoutes()).get('/spawn-limiter');
