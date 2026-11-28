@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "required-audits-register",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T11:30:27.497Z",
+  "artifactPath": "upgrades/side-effects/required-audits-register.md",
+  "artifactSha256": "7bc751c15d36b1477d3ff210252847694bc7c1b888b7251ae46dbf15f07b1176",
+  "coveredFiles": [
+    ".github/workflows/required-audits-cadence.yml",
+    "docs/audits/required-audits.json",
+    "docs/specs/audit-never-started.eli16.md",
+    "docs/specs/audit-never-started.md",
+    "package.json",
+    "scripts/lint-required-audits.mjs",
+    "tests/unit/lint-chain-completeness.test.ts",
+    "tests/unit/lint-required-audits.test.ts",
+    "upgrades/next/required-audits-register.md",
+    "upgrades/side-effects/required-audits-register.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review-binding trace after the final merge of main: same reviewed change, a revert undoes it; the independent reader concurred (echo-pipeline-strategy-audit-never-started.md)",
+  "eli16Path": "docs/specs/audit-never-started.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/required-audits-register.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -92,3 +92,7 @@ Also fixed: seed dates now follow the spec's rule; the false day-one claim is co
 
 - `tests/unit/lint-required-audits.test.ts`: pure parts and the command, covering both sides of each boundary.
 - On the real tree on 2026-11-27: 7 rows and 4 lapsed. llm-decision-accountability is overdue (last converged 2026-07-12, monthly); keyword-intent, local-CI parity and the unlanded census are never started (their only reports are unstamped).
+
+## Review binding (2026-11-28)
+
+The independent reader's concurrences (echo-pipeline-strategy-audit-never-started.md) cover this change. This section and a fresh trace were written after the final merge of main d42c7aa6db into 6a66a3343f, so the trace covers every path the PR changes as it now stands.
