@@ -17,9 +17,19 @@ It prints only numbers and always presses Stop. `--view-only` sends no input. Th
 
 `node --check` passes. A dry run against a locked M5 reached the Studio viewer and was refused with "Incorrect PIN", because the M5 PIN is not the Studio's. That showed the page address, the sign-in path and the failure output work. Delete the file to roll back.
 
+## Follow-up (2026-11-27 evening): which side left H.264
+
+The 15:23 Studio reading asked for H.264, the browser said it could decode it, and both sessions still fell to JPEG. The viewer shows one status line for three different causes, so the reading could not tell them apart. The script now also records:
+- whether the browser reports H.264 support and whether the page asked for it;
+- counts from the page's own video decoder: created, configured, frames decoded, frames shown, errors. It wraps the page's `VideoDecoder` and only counts, so the page behaves the same;
+- before pressing Stop, the server's own status for the session: the codec and, when the server change ships, the reason it left H.264.
+An `agreed` field in an uncommitted draft is gone: the session-request reply carries only the request id, so it could never be filled. The server's `videoCodec` is set only when the session starts or resumes, so after a viewer fallback mid-session it still reads `h264`. On its own it does not prove the stream stayed H.264; the decoder counts and `videoDowngrade` do. The script still prints only numbers and fixed words. It never prints the PIN or anything on the screen, and it still presses Stop at the end. It is still a standalone script that nothing imports.
+
 ## Second-pass review
 
 **Reviewer:** not reviewed. It is a standalone operator script with no importer; it goes through review before it is published.
+
+Follow-up (2026-11-27 18:34 PT): **Reviewer:** an independent second-pass reviewer concurred with the decoder-count follow-up. Its nits were all taken: a guard for a missing `VideoDecoder.isConfigSupported`, a guard so a missing `window.__video` cannot lose the reading, and the doc's `agreed` and `videoCodec` wording.
 
 ## Class-Closure Declaration
 

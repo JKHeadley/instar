@@ -89,15 +89,61 @@ try {
     };
     document.addEventListener('load', e => { if (e.target && e.target.id === 'screen') window.__pics.push(performance.now()); }, true);
     window.__desktopSmokeInjected = true;
+    // Which video format the session really used, and why: the browser's own H.264 answer,
+    // the format the page asked for, and what the decoder did. A start-up fallback shows
+    // only in the status line, so watch it from the first moment. The request reply names
+    // no format, so the decoder counts tell the two fallbacks apart: no decode at all means
+    // the server sent JPEG; decodes with no picture means this browser could not decode.
+    window.__video = { h264Supported: null, requested: null,
+      decoder: { created: 0, configured: 0, decodes: 0, outputs: 0, errors: [] } };
+    if (window.VideoDecoder) {
+      const Native = window.VideoDecoder;
+      const d = window.__video.decoder;
+      window.VideoDecoder = class extends Native {
+        constructor(init) {
+          super({ output: frame => { d.outputs++; init.output(frame); },
+            error: e => { if (d.errors.length < 5) d.errors.push(String(e?.name || '') + ': ' + String(e?.message || e).slice(0, 120)); init.error(e); } });
+          d.created++;
+        }
+        configure(config) { d.configured++; return super.configure(config); }
+        decode(chunk) { d.decodes++; return super.decode(chunk); }
+      };
+      if (typeof Native.isConfigSupported === 'function') window.VideoDecoder.isConfigSupported = Native.isConfigSupported.bind(Native);
+    }
+    if (window.VideoDecoder?.isConfigSupported) {
+      const supported = VideoDecoder.isConfigSupported.bind(VideoDecoder);
+      VideoDecoder.isConfigSupported = async config => {
+        const answer = await supported(config);
+        if (String(config?.codec || '').startsWith('avc1')) window.__video.h264Supported = !!answer?.supported;
+        return answer;
+      };
+    } else {
+      window.__video.h264Supported = false;
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+      const s = document.getElementById('status');
+      if (!s) return;
+      let last = s.textContent || '';
+      new MutationObserver(() => { const now = s.textContent || ''; if (now !== last) { window.__statuses.push(now); last = now; } })
+        .observe(s, { childList: true, characterData: true, subtree: true });
+    });
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (...args) => {
       const response = await originalFetch(...args);
       const path = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+      // The page's own credentials, so the driver can read the session's server-side status.
+      const h = args[1]?.headers;
+      if (typeof path === 'string' && path.startsWith('/desktop/') && h?.Authorization) {
+        window.__desktopHeaders = { Authorization: h.Authorization, 'X-Instar-Operator-Session': h['X-Instar-Operator-Session'] };
+      }
       if (path === '/dashboard/unlock' || path === '/desktop/requests') {
         try {
           const value = await response.clone().json();
           if (path === '/dashboard/unlock') window.__desktopSmokeAuth = value;
-          else if (args[1]?.method === 'POST') window.__desktopSmokeRequestId = value.requestId;
+          else if (args[1]?.method === 'POST') {
+            window.__desktopSmokeRequestId = value.requestId;
+            try { window.__video.requested = JSON.parse(String(args[1].body)).videoCodec ?? null; } catch { /* body not JSON */ }
+          }
         } catch { /* A failed response is handled by the viewer. */ }
       }
       return response;
@@ -150,10 +196,7 @@ try {
   })()`);
 
   if (opened?.error) throw new Error(`desktop open failed: ${opened.error} (status: ${JSON.stringify(opened.status ?? null)})`);
-  // Watch the status line for drops for the rest of the session.
-  await evaluate(`(() => { const s = document.getElementById('status'); let last = s?.textContent || '';
-    setInterval(() => { const now = s?.textContent || ''; if (now !== last) { window.__statuses.push(now); last = now; } }, 200);
-    return true; })()`);
+  // The status line is watched from page load (see the injected script), so a start-up fallback is kept.
   const firstPictureMs = await evaluate(`(window.__unlockAt !== null && window.__pics.length) ? Math.round(window.__pics[0] - window.__unlockAt) : null`);
   const pct = (v, f) => { if (!v.length) return null; const s = [...v].sort((a, b) => a - b); return Math.round(s[Math.max(0, Math.ceil(f * s.length) - 1)]); };
   // Idle picture rate: 10 s with no input.
@@ -188,12 +231,20 @@ try {
       picturesPerSecond: Math.round(pics.length / ((b1 - b0) / 1000) * 10) / 10, gapP95Ms: pct(gaps, 0.95), gapMaxMs: gaps.length ? Math.round(Math.max(...gaps)) : null };
   }
   const statuses = await evaluate('window.__statuses');
+  // Decoder counts at the end of the run, and the server's own view of the session
+  // (its video format and, where the server records it, why it left H.264), read before Stop.
+  // The server sets videoCodec only at request or resume: a viewer fallback mid-session still reads h264 there.
+  const video = (await evaluate('window.__video')) || { missing: true };
+  video.server = await evaluate(`(async () => { try {
+    const r = await fetch('/desktop/requests/' + encodeURIComponent(window.__desktopSmokeRequestId), { cache: 'no-store', credentials: 'same-origin', headers: window.__desktopHeaders || {} });
+    const v = await r.json(); return { httpStatus: r.status, videoCodec: v.videoCodec ?? null, videoDowngrade: v.videoDowngrade ?? null };
+  } catch (e) { return { error: String(e && e.message || e).slice(0, 120) }; } })()`);
   stopAttempted = true;
   const stopped = await evaluate(`(async () => { document.getElementById('stopButton')?.click();
     for (let i = 0; i < 100; i++) { const s = document.getElementById('status')?.textContent || '';
       if (/stopped/i.test(s)) return s; await new Promise(r => setTimeout(r, 100)); }
     return document.getElementById('status')?.textContent; })()`);
-  console.log(JSON.stringify({ machine: opened.machine, geometry: `${opened.width}x${opened.height}`, codec: opened.codec,
+  console.log(JSON.stringify({ machine: opened.machine, geometry: `${opened.width}x${opened.height}`, codec: opened.codec, video,
     viewOnly, firstPictureMsFromPin: firstPictureMs, idlePicturesPerSecond: Math.round(idleCount / 10 * 10) / 10,
     delay: viewOnly ? null : { samples: delays.length, unanswered, typicalMs: pct(delays, 0.5), worstMs: pct(delays, 0.95) },
     burst, statusChanges: statuses, stopped: /stopped/i.test(stopped || '') }, null, 1));
