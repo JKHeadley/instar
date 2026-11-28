@@ -35,4 +35,3 @@ Non-blocking notes from round 2, carried forward:
 - The provider adapters' input-injection helpers type raw text but have no live delivery caller today; routing them through `sanitizeTypedText` is a follow-up so wiring them later cannot reopen this.
 - The A2A path still types multi-line and tab text key by key with no bracketed paste. Converging it with `rawInject`'s paste logic is a follow-up.
 - `injectMessage` rewrites text before `rawInject` (existed before this change).
-

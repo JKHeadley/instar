@@ -868,11 +868,7 @@ async function loadTargetsAndMaybeOpen({ open = true, targets } = {}) {
 $('unlockButton').addEventListener('click', async () => {
   $('unlockButton').disabled = true;
   try {
-    const response = await fetch('/dashboard/unlock', {
-      method: 'POST', cache: 'no-store', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pin: $('pin').value }),
-    });
+    const response = await (await import('/dashboard/local-access.js').catch(() => ({ postUnlock: (pin) => fetch('/dashboard/unlock', { method: 'POST', cache: 'no-store', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) }) }))).postUnlock($('pin').value);
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !result.token || !result.operatorSessionToken) {
       throw new Error(result.error || 'Dashboard PIN was not accepted.');

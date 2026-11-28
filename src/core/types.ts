@@ -5224,6 +5224,11 @@ export interface InstarConfig {
   dashboardPinGeneration?: string;
   /** Security hardening knobs (dashboard-pin-throttle.md + dashboard-scoped-session-token.md). */
   security?: {
+    /**
+     * The one-time local dashboard link (docs/specs/identity-security-piece1a-local-link.md).
+     * Dev-gated: omit `enabled` so resolveDevAgentGate decides (live on development agents).
+     */
+    localAccessLink?: { enabled?: boolean };
     /** identity-security piece 2b: the owner record on this machine. Default ON (it grants nothing by itself);
      *  `enabled: false` stops it: GET /owner-record answers 503 and no owner-record mesh traffic runs. */
     ownerRecord?: { enabled?: boolean };

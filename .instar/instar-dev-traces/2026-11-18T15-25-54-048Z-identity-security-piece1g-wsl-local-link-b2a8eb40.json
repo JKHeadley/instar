@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1g-wsl-local-link",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T15:25:54.048Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1g-wsl-local-link.md",
+  "artifactSha256": "cb954c24ec25264513fe60918873748ec9a5fa8b4a6c532e3cccda96a4551b00",
+  "specPath": "docs/specs/identity-security-piece1g-wsl-local-link.md",
+  "coveredFiles": [
+    "docs/specs/identity-security-piece1g-wsl-local-link.eli16.md",
+    "docs/specs/identity-security-piece1g-wsl-local-link.md",
+    "docs/specs/reports/identity-security-piece1g-wsl-local-link-convergence.md",
+    "src/commands/dashboardOpen.ts",
+    "src/core/wslLocalPeer.ts",
+    "src/data/awareness/wsl-local-link.md",
+    "src/server/localAccessRoutes.ts",
+    "tests/unit/identity-piece1g-wsl-local-link.test.ts",
+    "upgrades/next/identity-security-piece1g-wsl-local-link.md",
+    "upgrades/side-effects/identity-security-piece1g-wsl-local-link.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The one-time local dashboard link is also redeemable from the exact WSL gateway in confirmed NAT mode (umbrella 4.6: the secret is the credential); minting stays loopback-only; gateway requests rate-limited.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no self-triggered action; the wslinfo probe runs at most once every 10 minutes, on a local-access request"
+  }
+}

@@ -1,0 +1,4 @@
+---
+title: Local dashboard link
+---
+When a person sitting at this agent's computer cannot unlock the dashboard (for example "Too many wrong PINs from this machine"), and the file `.instar/bin/dashboard-open` exists in your agent folder, run that file yourself: it opens the dashboard on this computer's screen through a one-time link, and the person still types their PIN. Browsers opened that way get their own allowance of PIN tries, which other accounts and restricted helpers on the computer cannot use up. Only do this when the person says they are at the computer; the link works once, for 15 minutes, and is never sent through any chat. Over SSH it can print the link instead (`dashboard-open --print --port <forwarded port>`), but the person runs that in their own terminal. If the file does not exist, the link is not turned on for this agent: point them to the paired phone app or a browser they have unlocked before.
