@@ -75,4 +75,4 @@ CI assembles the release notes from main plus this branch. Main's upgrades/next/
 
 ## Review binding (2026-11-28)
 
-The independent reader's concurrences (second-pass/maturation-dated-owner-review.md, two rounds; echo-pipeline-strategy-release-note-fix-1127.md, including its 4044 package.json read of 2026-11-28 00:18) cover this change. This section and a fresh trace were written after the final merge of main 49dc53022a into 881bbafc62, so the trace covers every path the PR changes as it now stands.
+The independent reader's concurrences (second-pass/maturation-dated-owner-review.md, two rounds; echo-pipeline-strategy-release-note-fix-1127.md, including its 4044 package.json read of 2026-11-28 00:18; second-pass/4044-merge-99abb1c9.md, the delta read of the merge with main 283ca57e82 and its feature-ladders.json resolution) cover this change. This section and a fresh trace were written after the final merge of main 283ca57e82 into 99abb1c999, so the trace covers every path the PR changes as it now stands.
